@@ -13,6 +13,11 @@
   --card-foreground: #09090b;
   --accent: #18181b;
   --accent-foreground: #ffffff;
+  --field: #fafafa;
+  --field-border: #e4e4e7;
+  --field-foreground: #18181b;
+  --field-placeholder: #a1a1aa;
+  color-scheme: light;
 }
 
 .dark {
@@ -23,14 +28,74 @@
   --card-foreground: #ececed;
   --accent: #ffffff;
   --accent-foreground: #0d0d0f;
+  --field: #18181b;
+  --field-border: #27272a;
+  --field-foreground: #e4e4e7;
+  --field-placeholder: #71717a;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
 }
 
 body {
+  margin: 0;
   background-color: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
-  transition: background-color 0.3s ease;
+  transition: background-color 0.3s ease, color 0.3s ease;
+  user-select: none;
+}
+
+input:not([type="range"]):not([type="checkbox"]):not([type="radio"]),
+textarea,
+select {
+  background-color: var(--field);
+  border-color: var(--field-border);
+  color: var(--field-foreground);
+  caret-color: var(--field-foreground);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--field-placeholder);
+}
+
+input:disabled,
+textarea:disabled,
+select:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+/* Some older panels still use hard-coded light utility classes.
+   These guards keep documentation/cards readable in dark mode while preserving
+   intentional white action buttons that use text-black. */
+.dark .text-zinc-900 {
+  color: #f4f4f5 !important;
+}
+
+.dark .bg-white {
+  background-color: #18181b !important;
+}
+
+.dark button.bg-white,
+.dark .bg-white.text-black {
+  background-color: #ffffff !important;
+  color: #09090b !important;
+}
+
+.dark .border-zinc-100,
+.dark .border-zinc-200 {
+  border-color: #27272a !important;
+}
+
+.dark .bg-zinc-50 {
+  background-color: #18181b !important;
 }
 
 .custom-scrollbar::-webkit-scrollbar {
@@ -42,10 +107,10 @@ body {
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: #e4e4e7;
+  background: #d4d4d8;
   border-radius: 99px;
 }
 
 .dark .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: #27272a;
+  background: #3f3f46;
 }
