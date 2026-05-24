@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, Menu } = require('electron');
+const { app, BrowserWindow, dialog, Menu, ipcMain } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const http = require('http');
@@ -13,6 +13,7 @@ const mainLogPath = path.join(logDir, 'electron-main.log');
 const backendLogPath = path.join(logDir, 'backend.log');
 const rendererLogPath = path.join(logDir, 'renderer.log');
 const distIndexPath = path.join(studioDir, 'dist', 'index.html');
+const preloadPath = path.join(studioDir, 'preload.cjs');
 const forceDev = process.env.HAIKU_STUDIO_DEV === '1' || process.env.HAIKU_STUDIO_DEV === 'true';
 const backendMode = forceDev || !fs.existsSync(distIndexPath) ? 'development' : 'production';
 
@@ -195,6 +196,31 @@ function startBackendIfNeeded() {
   });
 }
 
+
+function registerIpcHandlers() {
+  ipcMain.handle('haiku:pick-tokenizer-file', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Select tokenizer training text file',
+      properties: ['openFile'],
+      filters: [
+        { name: 'Text data', extensions: ['txt', 'text', 'jsonl', 'md'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+    });
+    if (result.canceled || !result.filePaths || result.filePaths.length === 0) return '';
+    return result.filePaths[0];
+  });
+
+  ipcMain.handle('haiku:pick-corpus-folder', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Select tokenizer corpus folder',
+      properties: ['openDirectory'],
+    });
+    if (result.canceled || !result.filePaths || result.filePaths.length === 0) return '';
+    return result.filePaths[0];
+  });
+}
+
 async function createWindow() {
   appendMain('[createWindow] starting\n');
   try {
@@ -222,6 +248,7 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      preload: preloadPath,
       devTools: true,
     },
   });
@@ -307,7 +334,10 @@ function stopBackend() {
   }
 }
 
-app.whenReady().then(createWindow).catch((err) => {
+app.whenReady().then(() => {
+  registerIpcHandlers();
+  return createWindow();
+}).catch((err) => {
   appendMain(`[whenReady.catch] ${err && err.stack ? err.stack : String(err)}\n`);
   tryShowFatalError('Haiku Studio failed to launch', err && err.message ? err.message : String(err));
   app.quit();
