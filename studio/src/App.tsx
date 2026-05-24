@@ -49,6 +49,15 @@ import axios from 'axios';
 import HuggingFaceHub from './components/HuggingFaceHub';
 import { HuggingFaceIcon } from './components/HuggingFaceIcon';
 
+declare global {
+  interface Window {
+    haikuStudio?: {
+      pickTokenizerFile: () => Promise<string>;
+      pickCorpusFolder: () => Promise<string>;
+    };
+  }
+}
+
 // --- Types ---
 interface Message {
   role: 'user' | 'bot';
@@ -86,6 +95,9 @@ interface AppSettings {
   dpo_lr?: number;
   dpo_epochs?: number;
   dpo_batch_size?: number;
+  tokenizer_path?: string;
+  prebuilt_tokenizer_path?: string;
+  project_tokenizer_path?: string;
   is_training?: boolean;
   current_task?: string | null;
 }
@@ -200,9 +212,11 @@ export default function App() {
   const [dpoLR, setDpoLR] = useState(0.000003);
   
   // Tokenizer Training State
+  const [tokSourceType, setTokSourceType] = useState<'file' | 'corpus'>('corpus');
   const [tokVocabSize, setTokVocabSize] = useState(50000);
   const [tokMinFreq, setTokMinFreq] = useState(5);
-  const [tokPath, setTokPath] = useState('corpus');
+  const [tokPath, setTokPath] = useState('');
+  const [tokMaxInputMb, setTokMaxInputMb] = useState(0);
   const [isTrainingTok, setIsTrainingTok] = useState(false);
   
   // Chat configuration
@@ -233,7 +247,11 @@ export default function App() {
       try {
         const res = await axios.get('/api/metrics');
         setMetrics(res.data);
-        if (res.data?.meta?.running !== undefined) setIsTraining(Boolean(res.data.meta.running));
+        if (res.data?.meta?.running !== undefined) {
+          const running = Boolean(res.data.meta.running);
+          setIsTraining(running);
+          setIsTrainingTok(running && res.data.meta.current_task === 'tokenizer');
+        }
       } catch (e) {}
     };
 
@@ -259,6 +277,8 @@ export default function App() {
       if (res.data.dpo_epochs !== undefined) setDpoEpochs(Number(res.data.dpo_epochs));
       if (res.data.dpo_batch_size !== undefined) setDpoBatchSize(Number(res.data.dpo_batch_size));
       if (res.data.is_training !== undefined) setIsTraining(Boolean(res.data.is_training));
+      if (res.data.corpus_dir && !tokPath) setTokPath('');
+
     } catch (e) {}
   };
 
@@ -335,20 +355,55 @@ export default function App() {
     } catch (e) {}
   };
 
+  const browseTokenizerSource = async () => {
+    try {
+      const picker = tokSourceType === 'file'
+        ? window.haikuStudio?.pickTokenizerFile
+        : window.haikuStudio?.pickCorpusFolder;
+      if (!picker) {
+        alert("Native picker is unavailable. Paste the local path manually.");
+        return;
+      }
+      const selected = await picker();
+      if (selected) setTokPath(selected);
+    } catch (e: any) {
+      alert(e?.message || "Failed to open picker.");
+    }
+  };
+
   const startTokenizerTraining = async () => {
     if (isTraining || isTrainingTok) return;
+    const cleanPath = tokPath.trim();
+    if (!cleanPath) {
+      alert("No tokenizer source selected. Choose a .txt file or corpus folder first.");
+      return;
+    }
+    setIsTerminalOpen(true);
     setIsTrainingTok(true);
     try {
       const res = await axios.post('/api/train/tokenizer', {
-        path: tokPath,
+        source_type: tokSourceType,
+        input_path: cleanPath,
         vocab_size: tokVocabSize,
-        min_freq: tokMinFreq
+        min_freq: tokMinFreq,
+        max_input_mb: tokMaxInputMb
       });
-      alert(res.data.status);
-    } catch (e) {
-      alert("Failed to start tokenizer training.");
-    } finally {
+      setLogs(prev => [...prev, `[tokenizer] ${res.data.status}. Saving to data/tokenizer.json and project tokenizer copy.`].slice(-1000));
+    } catch (e: any) {
+      const message = e?.response?.data?.error || "Failed to start tokenizer training.";
+      alert(message);
       setIsTrainingTok(false);
+    }
+  };
+
+  const restorePrebuiltTokenizer = async () => {
+    setIsTerminalOpen(true);
+    try {
+      const res = await axios.post('/api/tokenizer/restore-prebuilt');
+      setLogs(prev => [...prev, `[tokenizer] ${res.data.status}: data/tokenizer.json restored from bundled prebuilt tokenizer.`].slice(-1000));
+      fetchSettings();
+    } catch (e: any) {
+      alert(e?.response?.data?.error || "Failed to restore prebuilt tokenizer.");
     }
   };
 
@@ -492,7 +547,7 @@ export default function App() {
           )}>H</div>
           <div className="flex flex-col">
             <span className={cn("font-bold text-base tracking-tight leading-none", theme === 'dark' ? "text-white" : "text-zinc-900")}>Haiku Studio</span>
-            <span className="text-[10px] font-semibold text-zinc-400 capitalize tracking-wider mt-1 opacity-70">BY ROOTCOMPUTER</span>
+            <span className="text-[10px] font-semibold text-zinc-400 capitalize tracking-wider mt-1 opacity-70">h2 engine · optional UI</span>
           </div>
         </div>
 
@@ -1108,25 +1163,70 @@ export default function App() {
                  </div>
 
                  <div className="grid grid-cols-3 gap-8">
-                    <Card title="Tokenizer Laboratory" subtitle="Train custom BPE tokenizers" className="col-span-2">
+                    <Card title="Tokenizer Laboratory" subtitle="Build or restore the active BPE tokenizer" className="col-span-2">
                        <div className="space-y-6">
-                           <div className="space-y-2 group relative">
-                              <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest leading-none">Corpus Source (File or Folder)</label>
-                              <input 
-                                type="text" 
-                                value={tokPath} 
-                                onChange={(e) => setTokPath(e.target.value)} 
-                                className={cn(
-                                  "w-full border rounded-xl px-4 py-3 text-sm font-mono outline-none transition-all",
-                                  theme === 'dark' ? "bg-zinc-900 border-zinc-800" : "bg-zinc-50 border-zinc-200"
-                                )} 
-                              />
+                           <div className="space-y-3">
+                              <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest leading-none">Tokenizer Source Type</label>
+                              <div className="grid grid-cols-2 gap-3">
+                                 {[
+                                   { id: 'file' as const, label: 'Single Text File', desc: 'Use one .txt file as the vocab basis.' },
+                                   { id: 'corpus' as const, label: 'Corpus Folder', desc: 'Scan a folder recursively for .txt files.' }
+                                 ].map((option) => (
+                                   <button
+                                     key={option.id}
+                                     type="button"
+                                     onClick={() => setTokSourceType(option.id)}
+                                     className={cn(
+                                       "rounded-xl border px-4 py-3 text-left transition-all",
+                                       tokSourceType === option.id
+                                         ? (theme === 'dark' ? "bg-zinc-100 text-black border-zinc-100" : "bg-zinc-900 text-white border-zinc-900")
+                                         : (theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-700" : "bg-zinc-50 border-zinc-200 text-zinc-600 hover:border-zinc-300")
+                                     )}
+                                   >
+                                      <div className="text-xs font-black uppercase tracking-widest">{option.label}</div>
+                                      <div className={cn("mt-1 text-[10px] font-medium", tokSourceType === option.id ? "opacity-70" : "text-zinc-500")}>{option.desc}</div>
+                                   </button>
+                                 ))}
+                              </div>
                            </div>
-                           <div className="grid grid-cols-2 gap-6">
+
+                           <div className="space-y-2 group relative">
+                              <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest leading-none">
+                                {tokSourceType === 'file' ? 'Text File Path' : 'Corpus Folder Path'}
+                              </label>
+                              <div className="flex gap-3">
+                                <input 
+                                  type="text"
+                                  placeholder={tokSourceType === 'file' ? 'E:\\AGENT 3\\training\\FineFactualNews.txt' : 'corpus'}
+                                  value={tokPath} 
+                                  onChange={(e) => setTokPath(e.target.value)} 
+                                  className={cn(
+                                    "flex-1 border rounded-xl px-4 py-3 text-sm font-mono outline-none transition-all",
+                                    theme === 'dark' ? "bg-zinc-900 border-zinc-800" : "bg-zinc-50 border-zinc-200"
+                                  )} 
+                                />
+                                <button
+                                  type="button"
+                                  onClick={browseTokenizerSource}
+                                  className={cn(
+                                    "px-4 rounded-xl border text-xs font-black uppercase tracking-widest transition-all",
+                                    theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-300 hover:bg-zinc-800" : "bg-white border-zinc-200 text-zinc-700 hover:bg-zinc-50"
+                                  )}
+                                >
+                                  Browse
+                                </button>
+                              </div>
+                              <p className="text-[10px] text-zinc-500 font-medium">
+                                This field is required. Relative paths are resolved from the h2 repo root.
+                              </p>
+                           </div>
+
+                           <div className="grid grid-cols-3 gap-6">
                               <div className="space-y-2 group relative">
                                  <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest leading-none">Vocabulary Size</label>
                                  <input 
                                    type="number" 
+                                   min={256}
                                    value={tokVocabSize} 
                                    onChange={(e) => setTokVocabSize(Number(e.target.value))} 
                                    className={cn(
@@ -1138,7 +1238,8 @@ export default function App() {
                               <div className="space-y-2 group relative">
                                  <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest leading-none">Min Frequency</label>
                                  <input 
-                                   type="number" 
+                                   type="number"
+                                   min={1}
                                    value={tokMinFreq} 
                                    onChange={(e) => setTokMinFreq(Number(e.target.value))} 
                                    className={cn(
@@ -1147,23 +1248,60 @@ export default function App() {
                                    )} 
                                  />
                               </div>
+                              <div className="space-y-2 group relative">
+                                 <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest leading-none">RAM Guard MB</label>
+                                 <input 
+                                   type="number"
+                                   min={0}
+                                   value={tokMaxInputMb} 
+                                   onChange={(e) => setTokMaxInputMb(Number(e.target.value))} 
+                                   className={cn(
+                                     "w-full border rounded-xl px-4 py-3 text-sm font-mono outline-none transition-all",
+                                     theme === 'dark' ? "bg-zinc-900 border-zinc-800" : "bg-zinc-50 border-zinc-200"
+                                   )} 
+                                 />
+                                 <p className="text-[10px] text-zinc-500 font-medium">0 = auto-safe based on detected RAM.</p>
+                              </div>
                            </div>
-                           <button 
-                             onClick={startTokenizerTraining}
-                             disabled={isTrainingTok}
-                             className={cn(
-                               "w-full py-4 font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg hover:-translate-y-0.5 active:translate-y-0",
-                               theme === 'dark' ? "bg-zinc-200 text-black" : "bg-zinc-900 text-white"
-                             )}
-                           >
-                              {isTrainingTok ? <RotateCcw className="w-4 h-4 animate-spin" /> : <Database className="w-4 h-4" />}
-                              Engage Tokenizer Training Run
-                           </button>
+
+                           <div className={cn("rounded-xl border p-4 text-[10px] font-mono leading-6", theme === 'dark' ? "bg-zinc-950 border-zinc-800 text-zinc-400" : "bg-zinc-50 border-zinc-200 text-zinc-600")}>
+                              <div><strong>Primary output:</strong> data/tokenizer.json</div>
+                              <div><strong>Project copy:</strong> {settings?.project_tokenizer_path || 'projects/haiku_studio/tokenizer.json'}</div>
+                              <div><strong>Bundled prebuilt:</strong> {settings?.prebuilt_tokenizer_path || 'studio/prebuilt/default_tokenizer.json'}</div>
+                           </div>
+
+                           <div className="grid grid-cols-2 gap-3">
+                              <button 
+                                onClick={startTokenizerTraining}
+                                disabled={isTrainingTok || isTraining}
+                                className={cn(
+                                  "py-4 font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:hover:translate-y-0",
+                                  theme === 'dark' ? "bg-zinc-200 text-black" : "bg-zinc-900 text-white"
+                                )}
+                              >
+                                 {isTrainingTok ? <RotateCcw className="w-4 h-4 animate-spin" /> : <Database className="w-4 h-4" />}
+                                 {isTrainingTok ? 'Tokenizer Running' : 'Build Tokenizer'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={restorePrebuiltTokenizer}
+                                disabled={isTrainingTok || isTraining}
+                                className={cn(
+                                  "py-4 font-bold rounded-xl transition-all flex items-center justify-center gap-2 border disabled:opacity-50",
+                                  theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-200 hover:bg-zinc-800" : "bg-white border-zinc-200 text-zinc-900 hover:bg-zinc-50"
+                                )}
+                              >
+                                <RotateCcw className="w-4 h-4" />
+                                Restore Prebuilt
+                              </button>
+                           </div>
                        </div>
                     </Card>
                     <div className="space-y-8">
                        <Card title="Tokenizer Insights">
-                          <p className="text-[10px] text-zinc-500 leading-relaxed font-medium">BPE training is an iterative process. For a 50k vocab, it typically takes 5-10 minutes on a standard CPU with a 500MB corpus.</p>
+                          <p className="text-[10px] text-zinc-500 leading-relaxed font-medium">
+                            Tokenizer training now streams source progress into the System Kernel Output panel. The RAM guard samples large corpora instead of loading everything blindly, then saves both the active data tokenizer and a project-local tokenizer copy.
+                          </p>
                        </Card>
                     </div>
                  </div>
