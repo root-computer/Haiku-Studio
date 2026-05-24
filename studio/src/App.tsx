@@ -179,6 +179,99 @@ const TutorialBox = ({ title, description, icon: Icon, colorClass }: { title: st
   );
 };
 
+
+const fieldClass = (theme: 'light' | 'dark', disabled?: boolean, className?: string) => cn(
+  "w-full rounded-xl px-4 py-3 text-sm font-mono border transition-all outline-none placeholder:text-zinc-400 dark:placeholder:text-zinc-600",
+  theme === 'dark'
+    ? "bg-zinc-900 border-zinc-800 text-zinc-200 focus:border-zinc-600 focus:bg-zinc-900"
+    : "bg-zinc-50 border-zinc-200 text-zinc-900 focus:bg-white focus:border-zinc-900",
+  disabled && "opacity-60 cursor-not-allowed bg-zinc-50 dark:bg-zinc-900/30 border-transparent text-zinc-400 dark:text-zinc-500",
+  className
+);
+
+type TextFieldProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, 'className'> & { className?: string };
+const TextField = ({ className, disabled, ...props }: TextFieldProps) => {
+  const { theme } = useTheme();
+  return <input {...props} disabled={disabled} className={fieldClass(theme, disabled, className)} />;
+};
+
+type NumberFieldProps = {
+  value: number;
+  onChange: (value: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  integer?: boolean;
+  disabled?: boolean;
+  className?: string;
+  ariaLabel?: string;
+};
+const NumberField = ({ value, onChange, min, max, step, integer, disabled, className, ariaLabel }: NumberFieldProps) => {
+  const { theme } = useTheme();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [draft, setDraft] = useState(String(value ?? 0));
+
+  useEffect(() => {
+    if (document.activeElement !== inputRef.current) {
+      setDraft(String(value ?? 0));
+    }
+  }, [value]);
+
+  const commit = (raw: string, force = false) => {
+    const next = raw.trim();
+    setDraft(raw);
+    if (!force && (next === '' || next === '-' || next === '.' || next === '-.')) return;
+    let parsed = Number(next);
+    if (!Number.isFinite(parsed)) {
+      if (force) setDraft(String(value ?? 0));
+      return;
+    }
+    if (integer) parsed = Math.round(parsed);
+    if (typeof min === 'number') parsed = Math.max(min, parsed);
+    if (typeof max === 'number') parsed = Math.min(max, parsed);
+    onChange(parsed);
+    if (force) setDraft(String(parsed));
+  };
+
+  return (
+    <input
+      ref={inputRef}
+      type="text"
+      inputMode={integer ? "numeric" : "decimal"}
+      value={draft}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      data-step={step}
+      onChange={(e) => commit(e.target.value)}
+      onBlur={(e) => commit(e.target.value, true)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') e.currentTarget.blur();
+        if (e.key === 'Escape') {
+          setDraft(String(value ?? 0));
+          e.currentTarget.blur();
+        }
+      }}
+      className={fieldClass(theme, disabled, className)}
+    />
+  );
+};
+
+const RunButton = ({ children, onClick, disabled, icon: Icon = Zap }: { children: React.ReactNode; onClick: () => void; disabled?: boolean; icon?: any }) => {
+  const { theme } = useTheme();
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "w-full py-4 font-bold rounded-xl transition-all flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-50",
+        theme === 'dark' ? "bg-white text-black hover:bg-zinc-100 disabled:bg-zinc-700 disabled:text-zinc-400" : "bg-black text-white hover:bg-zinc-800 shadow-xl shadow-zinc-300 disabled:bg-zinc-300 disabled:text-white disabled:shadow-none"
+      )}
+    >
+      <Icon className="w-4 h-4" /> {children}
+    </button>
+  );
+};
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'home' | 'chat' | 'pretrain' | 'sft' | 'dpo' | 'help' | 'hub'>('home');
   const [deployMenuOpen, setDeployMenuOpen] = useState(false);
@@ -326,11 +419,28 @@ export default function App() {
     alert(`Applied ${rec.tier} settings for ${hardwareInfo.hardware.name}`);
   };
 
-  const toggleTheme = () => {
+  const toggleTheme = async () => {
     const newTheme = theme === 'light' ? 'dark' : 'light';
     setTheme(newTheme);
-    // Ideally sync with backend too
+    const payload = {
+      ...(settings || {}),
+      theme: newTheme,
+      show_tooltips: showTooltips,
+      active_project: activeProject,
+      projects
+    };
+    setSettings(payload as AppSettings);
+    try {
+      await axios.post('/api/settings', payload);
+    } catch (e) {
+      setLogs(prev => [...prev, '[theme] Failed to persist theme selection; local UI theme changed for this session.'].slice(-1000));
+    }
   };
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+    document.documentElement.style.colorScheme = theme;
+  }, [theme]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -1091,17 +1201,11 @@ export default function App() {
                                   <strong>Corpus Target:</strong> Point this to a folder within your project. The engine will recursively ingest all <code>.txt</code> files as raw training data.
                                </div>
                              )}
-                             <input 
-                                type="text" 
+                             <TextField
+                                type="text"
                                 value={corpusDir}
                                 onChange={(e) => setCorpusDir(e.target.value)}
-                                placeholder="e.g. datasets/my_corpus" 
-                                className={cn(
-                                  "w-full border rounded-xl px-4 py-3 text-sm font-mono outline-none transition-all",
-                                  theme === 'dark' 
-                                    ? "bg-zinc-900 border-zinc-800 text-zinc-300 focus:border-zinc-700 focus:bg-zinc-900/80 shadow-none" 
-                                    : "bg-zinc-50 border-zinc-200 text-zinc-600 focus:border-zinc-900 focus:bg-white"
-                                )} 
+                                placeholder="e.g. datasets/my_corpus"
                              />
                              <p className="text-[10px] font-medium text-zinc-400 italic">The engine will scan all subdirectories for .txt files recursively.</p>
                           </div>
@@ -1112,16 +1216,12 @@ export default function App() {
                                 <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-48 p-3 bg-zinc-900 text-white text-[10px] rounded-xl shadow-2xl border border-zinc-800">
                                    <strong>Epochs:</strong> The number of full passes through the training data. The system will automatically calculate total steps based on your corpus size.
                                 </div>
-                                <input 
-                                   type="number" 
+                                <NumberField
                                    value={pretrainEpochs}
-                                   onChange={(e) => setPretrainEpochs(Number(e.target.value))}
-                                   className={cn(
-                                     "w-full rounded-xl px-4 py-3 text-sm font-mono border transition-all outline-none",
-                                     theme === 'dark' 
-                                       ? "bg-zinc-900 border-zinc-800 text-zinc-200 focus:border-zinc-700" 
-                                       : "bg-zinc-50 border-zinc-200 text-zinc-900 focus:bg-white focus:border-zinc-900"
-                                   )} 
+                                   onChange={setPretrainEpochs}
+                                   min={1}
+                                   integer
+                                   ariaLabel="Training epochs"
                                 />
                              </div>
                              <div className="space-y-2 group relative">
@@ -1129,33 +1229,26 @@ export default function App() {
                                 <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-48 p-3 bg-zinc-900 text-white text-[10px] rounded-xl shadow-2xl border border-zinc-800">
                                    <strong>Learning Rate:</strong> The step size of the optimizer. 3e-4 is the industry standard for stable pretraining of smaller models.
                                 </div>
-                                <input 
-                                  type="number" 
-                                  step="0.0001"
-                                  value={pretrainLR} 
-                                  onChange={(e) => setPretrainLR(Number(e.target.value))} 
-                                  className={cn(
-                                   "w-full rounded-xl px-4 py-3 text-sm font-mono border transition-all outline-none",
-                                   theme === 'dark' 
-                                      ? "bg-zinc-900 border-zinc-800 text-zinc-200 focus:border-zinc-700" 
-                                      : "bg-zinc-50 border-zinc-200 text-zinc-900 focus:bg-white focus:border-zinc-900"
-                                 )} />
+                                <NumberField
+                                  value={pretrainLR}
+                                  onChange={setPretrainLR}
+                                  min={0}
+                                  step={0.0001}
+                                  ariaLabel="Base learning rate"
+                                />
                              </div>
                              <div className="space-y-2 group relative">
                                 <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Val Split %</label>
                                 <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-48 p-3 bg-zinc-900 text-white text-[10px] rounded-xl shadow-2xl border border-zinc-800">
                                    <strong>Val Split:</strong> Percentage of data reserved for evaluation. Higher splits provide better metrics but reduce training data.
                                 </div>
-                                <input 
-                                  type="number" 
-                                  value={pretrainValSplit} 
-                                  onChange={(e) => setPretrainValSplit(Number(e.target.value))} 
-                                  className={cn(
-                                   "w-full rounded-xl px-4 py-3 text-sm font-mono border transition-all outline-none",
-                                   theme === 'dark' 
-                                      ? "bg-zinc-900 border-zinc-800 text-zinc-200 focus:border-zinc-700" 
-                                      : "bg-zinc-50 border-zinc-200 text-zinc-900 focus:bg-white focus:border-zinc-900"
-                                 )} />
+                                <NumberField
+                                  value={pretrainValSplit}
+                                  onChange={setPretrainValSplit}
+                                  min={0}
+                                  max={50}
+                                  ariaLabel="Validation split percent"
+                                />
                              </div>
                           </div>
 
@@ -1165,48 +1258,39 @@ export default function App() {
                                 <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-48 p-3 bg-zinc-900 text-white text-[10px] rounded-xl shadow-2xl border border-zinc-800">
                                    <strong>Micro Batch:</strong> Sequences processed per GPU step.
                                 </div>
-                                <input 
-                                  type="number" 
-                                  value={pretrainBatchSize} 
-                                  onChange={(e) => setPretrainBatchSize(Number(e.target.value))} 
-                                  className={cn(
-                                   "w-full rounded-xl px-4 py-3 text-sm font-mono border transition-all outline-none",
-                                   theme === 'dark' 
-                                      ? "bg-zinc-900 border-zinc-800 text-zinc-200 focus:border-zinc-700" 
-                                      : "bg-zinc-50 border-zinc-200 text-zinc-900 focus:bg-white focus:border-zinc-900"
-                                 )} />
+                                <NumberField
+                                  value={pretrainBatchSize}
+                                  onChange={setPretrainBatchSize}
+                                  min={1}
+                                  integer
+                                  ariaLabel="Micro batch size"
+                                />
                              </div>
                              <div className="space-y-2 group relative">
                                 <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Grad Accum</label>
                                 <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-48 p-3 bg-zinc-900 text-white text-[10px] rounded-xl shadow-2xl border border-zinc-800">
                                    <strong>Gradient Accumulation:</strong> Simulates larger batch sizes by summing gradients over multiple micro-batches.
                                 </div>
-                                <input 
-                                  type="number" 
-                                  value={pretrainGradAccum} 
-                                  onChange={(e) => setPretrainGradAccum(Number(e.target.value))} 
-                                  className={cn(
-                                   "w-full rounded-xl px-4 py-3 text-sm font-mono border transition-all outline-none",
-                                   theme === 'dark' 
-                                      ? "bg-zinc-900 border-zinc-800 text-zinc-200 focus:border-zinc-700" 
-                                      : "bg-zinc-50 border-zinc-200 text-zinc-900 focus:bg-white focus:border-zinc-900"
-                                 )} />
+                                <NumberField
+                                  value={pretrainGradAccum}
+                                  onChange={setPretrainGradAccum}
+                                  min={1}
+                                  integer
+                                  ariaLabel="Gradient accumulation steps"
+                                />
                              </div>
                              <div className="space-y-2 group relative">
                                 <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Warmup Steps</label>
                                 <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-48 p-3 bg-zinc-900 text-white text-[10px] rounded-xl shadow-2xl border border-zinc-800">
                                    <strong>Warmup:</strong> Number of steps to linearly increase LR from zero to base value. Prevents divergent gradients at start.
                                 </div>
-                                <input 
-                                  type="number" 
-                                  value={pretrainWarmupSteps} 
-                                  onChange={(e) => setPretrainWarmupSteps(Number(e.target.value))} 
-                                  className={cn(
-                                   "w-full rounded-xl px-4 py-3 text-sm font-mono border transition-all outline-none",
-                                   theme === 'dark' 
-                                      ? "bg-zinc-900 border-zinc-800 text-zinc-200 focus:border-zinc-700" 
-                                      : "bg-zinc-50 border-zinc-200 text-zinc-900 focus:bg-white focus:border-zinc-900"
-                                 )} />
+                                <NumberField
+                                  value={pretrainWarmupSteps}
+                                  onChange={setPretrainWarmupSteps}
+                                  min={0}
+                                  integer
+                                  ariaLabel="Warmup steps"
+                                />
                              </div>
                           </div>
 
@@ -1242,15 +1326,9 @@ export default function App() {
                                 <RotateCcw className="w-4 h-4" /> Terminate Active Run
                              </button>
                           ) : (
-                             <button 
-                                onClick={startPretraining}
-                                className={cn(
-                                   "w-full py-4 font-bold rounded-xl transition-all flex items-center justify-center gap-2",
-                                   theme === 'dark' ? "bg-white text-black hover:bg-zinc-100" : "bg-black text-white hover:bg-zinc-800 shadow-xl shadow-zinc-300"
-                                 )}
-                             >
-                                <Zap className="w-4 h-4" /> Initialize Pretraining Run
-                             </button>
+                             <RunButton onClick={startPretraining}>
+                                Initialize Pretraining Run
+                             </RunButton>
                           )}
                        </div>
                     </Card>
@@ -1323,15 +1401,12 @@ export default function App() {
                                 {tokSourceType === 'file' ? 'Text File Path' : 'Corpus Folder Path'}
                               </label>
                               <div className="flex gap-3">
-                                <input 
+                                <TextField
                                   type="text"
                                   placeholder={tokSourceType === 'file' ? 'E:\\AGENT 3\\training\\FineFactualNews.txt' : 'corpus'}
-                                  value={tokPath} 
-                                  onChange={(e) => setTokPath(e.target.value)} 
-                                  className={cn(
-                                    "flex-1 border rounded-xl px-4 py-3 text-sm font-mono outline-none transition-all",
-                                    theme === 'dark' ? "bg-zinc-900 border-zinc-800" : "bg-zinc-50 border-zinc-200"
-                                  )} 
+                                  value={tokPath}
+                                  onChange={(e) => setTokPath(e.target.value)}
+                                  className="flex-1"
                                 />
                                 <button
                                   type="button"
@@ -1352,41 +1427,32 @@ export default function App() {
                            <div className="grid grid-cols-3 gap-6">
                               <div className="space-y-2 group relative">
                                  <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest leading-none">Vocabulary Size</label>
-                                 <input 
-                                   type="number" 
+                                 <NumberField
+                                   value={tokVocabSize}
+                                   onChange={setTokVocabSize}
                                    min={256}
-                                   value={tokVocabSize} 
-                                   onChange={(e) => setTokVocabSize(Number(e.target.value))} 
-                                   className={cn(
-                                     "w-full border rounded-xl px-4 py-3 text-sm font-mono outline-none transition-all",
-                                     theme === 'dark' ? "bg-zinc-900 border-zinc-800" : "bg-zinc-50 border-zinc-200"
-                                   )} 
+                                   integer
+                                   ariaLabel="Tokenizer vocabulary size"
                                  />
                               </div>
                               <div className="space-y-2 group relative">
                                  <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest leading-none">Min Frequency</label>
-                                 <input 
-                                   type="number"
+                                 <NumberField
+                                   value={tokMinFreq}
+                                   onChange={setTokMinFreq}
                                    min={1}
-                                   value={tokMinFreq} 
-                                   onChange={(e) => setTokMinFreq(Number(e.target.value))} 
-                                   className={cn(
-                                     "w-full border rounded-xl px-4 py-3 text-sm font-mono outline-none transition-all",
-                                     theme === 'dark' ? "bg-zinc-900 border-zinc-800" : "bg-zinc-50 border-zinc-200"
-                                   )} 
+                                   integer
+                                   ariaLabel="Tokenizer minimum frequency"
                                  />
                               </div>
                               <div className="space-y-2 group relative">
                                  <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest leading-none">RAM Guard MB</label>
-                                 <input 
-                                   type="number"
+                                 <NumberField
+                                   value={tokMaxInputMb}
+                                   onChange={setTokMaxInputMb}
                                    min={0}
-                                   value={tokMaxInputMb} 
-                                   onChange={(e) => setTokMaxInputMb(Number(e.target.value))} 
-                                   className={cn(
-                                     "w-full border rounded-xl px-4 py-3 text-sm font-mono outline-none transition-all",
-                                     theme === 'dark' ? "bg-zinc-900 border-zinc-800" : "bg-zinc-50 border-zinc-200"
-                                   )} 
+                                   integer
+                                   ariaLabel="Tokenizer RAM guard megabytes"
                                  />
                                  <p className="text-[10px] text-zinc-500 font-medium">0 = auto-safe based on detected RAM.</p>
                               </div>
@@ -1467,7 +1533,7 @@ export default function App() {
                              <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-full p-3 bg-zinc-900 text-white text-[10px] rounded-xl shadow-2xl border border-zinc-800">
                                 <strong>SFT Dataset:</strong> Provide a <code>.jsonl</code> file containing multi-turn dialogues formatted with <code>user:</code> and <code>bot:</code> segments.
                              </div>
-                             <input type="text" value={sftDataPath} onChange={(e) => setSftDataPath(e.target.value)} placeholder={settings?.project_sft_dir || "projects/haiku_studio/datasets/sft"} className={cn("w-full border rounded-xl px-4 py-3 text-sm font-mono outline-none", theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-300" : "bg-zinc-50 border-zinc-200 text-zinc-600")} />
+                             <TextField type="text" value={sftDataPath} onChange={(e) => setSftDataPath(e.target.value)} placeholder={settings?.project_sft_dir || "projects/haiku_studio/datasets/sft"} />
                           </div>
 
                           <div className="grid grid-cols-3 gap-6">
@@ -1476,21 +1542,21 @@ export default function App() {
                                 <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-48 p-3 bg-zinc-900 text-white text-[10px] rounded-xl shadow-2xl border border-zinc-800">
                                    <strong>Epochs:</strong> Number of times the optimizer passes through the entire SFT dataset. Usually 1-3 is sufficient.
                                 </div>
-                                <input type="number" value={sftEpochs} onChange={(e) => setSftEpochs(Number(e.target.value))} className={cn("w-full border rounded-xl px-4 py-3 text-sm font-mono", theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-300" : "bg-zinc-50 border-zinc-200 text-zinc-900")} />
+                                <NumberField value={sftEpochs} onChange={setSftEpochs} min={1} integer ariaLabel="SFT epochs" />
                              </div>
                              <div className="space-y-2 group relative">
                                 <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Batch Size</label>
                                 <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-48 p-3 bg-zinc-900 text-white text-[10px] rounded-xl shadow-2xl border border-zinc-800">
                                    <strong>Batch Size:</strong> Number of conversation pairs processed simultaneously during one update step.
                                 </div>
-                                <input type="number" value={sftBatchSize} onChange={(e) => setSftBatchSize(Number(e.target.value))} className={cn("w-full border rounded-xl px-4 py-3 text-sm font-mono", theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-300" : "bg-zinc-50 border-zinc-200 text-zinc-900")} />
+                                <NumberField value={sftBatchSize} onChange={setSftBatchSize} min={1} integer ariaLabel="SFT batch size" />
                              </div>
                              <div className="space-y-2 group relative">
                                 <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Learning Rate</label>
                                 <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-48 p-3 bg-zinc-900 text-white text-[10px] rounded-xl shadow-2xl border border-zinc-800">
                                    <strong>Fine-Tuning LR:</strong> Often much lower than pretraining LR (e.g., 5e-5) to prevent catastrophic forgetting of base knowledge.
                                 </div>
-                                <input type="number" step="0.000001" value={sftLR} onChange={(e) => setSftLR(Number(e.target.value))} className={cn("w-full border rounded-xl px-4 py-3 text-sm font-mono", theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-300" : "bg-zinc-50 border-zinc-200 text-zinc-900")} />
+                                <NumberField value={sftLR} onChange={setSftLR} min={0} step={0.000001} ariaLabel="SFT learning rate" />
                              </div>
                           </div>
 
@@ -1504,9 +1570,9 @@ export default function App() {
                              </p>
                           </div>
 
-                          <button onClick={startSFT} disabled={isTraining} className="w-full py-4 bg-black hover:bg-zinc-800 disabled:bg-zinc-300 disabled:cursor-not-allowed text-white font-bold rounded-xl transition-all shadow-xl shadow-zinc-300">
+                          <RunButton onClick={startSFT} disabled={isTraining}>
                              Start SFT Training
-                          </button>
+                          </RunButton>
                        </div>
                     </Card>
                     <div className="space-y-6">
@@ -1553,31 +1619,31 @@ export default function App() {
                                <div className="grid grid-cols-2 gap-6">
                                   <div className="space-y-3 text-left col-span-2">
                                      <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider ml-1">Preference Dataset Path</label>
-                                     <input value={dpoDataPath} onChange={(e) => setDpoDataPath(e.target.value)} className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-sm font-mono focus:border-zinc-900 focus:bg-white transition-all outline-none" />
+                                     <TextField value={dpoDataPath} onChange={(e) => setDpoDataPath(e.target.value)} />
                                      <p className="text-[9px] text-zinc-400 font-medium px-1">Folder or file containing JSONL/text prompt/chosen/rejected pairs. Chat Lab feedback writes into the active project's DPO dataset folder by default.</p>
                                   </div>
                                   <div className="space-y-3 text-left">
                                      <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider ml-1">Beta</label>
-                                     <input type="number" value={dpoBeta} onChange={(e) => setDpoBeta(Number(e.target.value))} step={0.01} className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-sm font-mono focus:border-zinc-900 focus:bg-white transition-all outline-none" />
+                                     <NumberField value={dpoBeta} onChange={setDpoBeta} min={0} step={0.01} ariaLabel="DPO beta" />
                                      <p className="text-[9px] text-zinc-400 font-medium px-1">DPO preference strength against the frozen reference model.</p>
                                   </div>
                                   <div className="space-y-3 text-left">
                                      <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider ml-1">Alignment LR</label>
-                                     <input type="number" value={dpoLR} onChange={(e) => setDpoLR(Number(e.target.value))} step={0.000001} className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-sm font-mono focus:border-zinc-900 focus:bg-white transition-all outline-none" />
+                                     <NumberField value={dpoLR} onChange={setDpoLR} min={0} step={0.000001} ariaLabel="DPO learning rate" />
                                      <p className="text-[9px] text-zinc-400 font-medium px-1">Small learning rate for preference optimization.</p>
                                   </div>
                                   <div className="space-y-3 text-left">
                                      <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider ml-1">Epochs</label>
-                                     <input type="number" value={dpoEpochs} onChange={(e) => setDpoEpochs(Number(e.target.value))} min={1} className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-sm font-mono focus:border-zinc-900 focus:bg-white transition-all outline-none" />
+                                     <NumberField value={dpoEpochs} onChange={setDpoEpochs} min={1} integer ariaLabel="DPO epochs" />
                                   </div>
                                   <div className="space-y-3 text-left">
                                      <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider ml-1">Batch Size</label>
-                                     <input type="number" value={dpoBatchSize} onChange={(e) => setDpoBatchSize(Number(e.target.value))} min={1} className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-sm font-mono focus:border-zinc-900 focus:bg-white transition-all outline-none" />
+                                     <NumberField value={dpoBatchSize} onChange={setDpoBatchSize} min={1} integer ariaLabel="DPO batch size" />
                                   </div>
                                </div>
-                               <button onClick={startDPO} disabled={isTraining || !settings?.dpo_ready} className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-300 disabled:cursor-not-allowed text-white font-bold rounded-xl transition-all shadow-xl shadow-emerald-100 flex items-center justify-center gap-2">
-                                  <Zap className="w-4 h-4" /> Start DPO Training
-                               </button>
+                               <RunButton onClick={startDPO} disabled={isTraining || !settings?.dpo_ready}>
+                                  Start DPO Training
+                               </RunButton>
                                <p className="text-[10px] text-zinc-500 leading-relaxed">
                                   If no reference checkpoint exists, dpo.py creates one from the configured SFT policy checkpoint and freezes it. Output saves to {settings?.dpo_checkpoint || 'projects/haiku_studio/checkpoints/model.dpo.pt'}.
                                </p>
@@ -1591,11 +1657,11 @@ export default function App() {
                           <div className="space-y-8">
                              <div className="flex flex-col gap-1 text-left">
                                 <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Preference Pairs</span>
-                                <div className="text-3xl font-bold text-zinc-900 font-mono tracking-tight">{settings?.dpo_buffer ?? 0} <span className="text-xs text-zinc-300 font-medium tracking-normal">Pairs</span></div>
+                                <div className={cn("text-3xl font-bold font-mono tracking-tight", theme === 'dark' ? "text-white" : "text-zinc-900")}>{settings?.dpo_buffer ?? 0} <span className="text-xs text-zinc-400 font-medium tracking-normal">Pairs</span></div>
                              </div>
                              <div className="flex flex-col gap-1 text-left">
                                 <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">DPO Eval Step</span>
-                                <div className="text-3xl font-bold text-zinc-900 font-mono tracking-tight">{settings?.dpo_global_step ?? 0}</div>
+                                <div className={cn("text-3xl font-bold font-mono tracking-tight", theme === 'dark' ? "text-white" : "text-zinc-900")}>{settings?.dpo_global_step ?? 0}</div>
                              </div>
                              <div className="pt-6 border-t border-zinc-100 flex gap-2">
                                 <button onClick={flushDPOFeedback} className="flex-1 py-2.5 bg-zinc-50 hover:bg-zinc-100 border border-zinc-200 text-zinc-600 font-bold rounded-lg text-[9px] uppercase tracking-wider transition-all">Flush Feedback</button>
@@ -2087,7 +2153,7 @@ export default function App() {
               <div className="p-7 space-y-6">
                 <div className="space-y-2">
                   <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest ml-1">Project name</label>
-                  <input
+                  <TextField
                     autoFocus
                     value={newProjectName}
                     onChange={(e) => setNewProjectName(e.target.value)}
@@ -2096,10 +2162,7 @@ export default function App() {
                       if (e.key === 'Escape') setIsNewProjectOpen(false);
                     }}
                     placeholder="haiku_experiment"
-                    className={cn(
-                      "w-full rounded-xl px-4 py-3 text-sm font-mono font-bold border outline-none transition-all",
-                      theme === 'dark' ? "bg-zinc-900 border-zinc-800 focus:border-white text-white" : "bg-zinc-50 border-zinc-200 focus:border-zinc-900 text-zinc-900"
-                    )}
+                    className="font-bold"
                   />
                   <p className="text-[10px] text-zinc-500 leading-relaxed">
                     Names are converted to safe folder names. The project will be created under <span className="font-mono">projects/</span>.
@@ -2378,17 +2441,14 @@ export default function App() {
                                 ].map((arch, i) => (
                                   <div key={i} className="space-y-1.5">
                                      <label className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 capitalize tracking-wider ml-1 opacity-70">{arch.label}</label>
-                                     <input 
-                                       type="number" 
+                                     <NumberField
                                        value={arch.val}
                                        disabled={isArchitectureLocked}
-                                       onChange={(e) => setSettings(prev => prev ? ({ ...prev, [arch.key as keyof AppSettings]: Number(e.target.value) }) : null)}
-                                       className={cn(
-                                         "w-full rounded-xl px-4 py-2.5 text-xs font-mono font-bold border transition-all outline-none",
-                                         isArchitectureLocked 
-                                           ? "bg-zinc-50 dark:bg-zinc-900/30 border-transparent text-zinc-400 opacity-60 cursor-not-allowed" 
-                                           : "bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 focus:border-zinc-900 dark:focus:border-white text-zinc-900 dark:text-white"
-                                       )} 
+                                       integer
+                                       min={0}
+                                       onChange={(value) => setSettings(prev => prev ? ({ ...prev, [arch.key as keyof AppSettings]: value }) : null)}
+                                       className="py-2.5 text-xs font-bold"
+                                       ariaLabel={arch.label}
                                      />
                                   </div>
                                 ))}
