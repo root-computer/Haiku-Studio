@@ -114,6 +114,22 @@ interface AppSettings {
   sft_checkpoint?: string;
 }
 
+interface DpoStats {
+  active_project?: string;
+  ready?: boolean;
+  dataset_path?: string;
+  dataset_exists?: boolean;
+  file_count?: number;
+  preference_pairs?: number;
+  feedback_file?: string;
+  feedback_pairs?: number;
+  latest_step?: number;
+  latest_metrics?: any;
+  log_path?: string;
+  checkpoints?: Record<string, { path: string; exists: boolean; size_bytes?: number; modified_at?: string | null }>;
+  files?: Array<{ path: string; size_bytes: number; modified_at: string; preference_pairs: number }>;
+}
+
 // --- Context ---
 const ThemeContext = React.createContext<{ theme: 'light' | 'dark', showTooltips: boolean }>({ theme: 'light', showTooltips: true });
 const useTheme = () => React.useContext(ThemeContext);
@@ -172,6 +188,21 @@ const kernelSeverityLabelClass = (severity: KernelSeverity, theme: 'light' | 'da
   if (severity === 'error') return theme === 'dark' ? 'bg-rose-500 text-white' : 'bg-rose-600 text-white';
   if (severity === 'warning') return theme === 'dark' ? 'bg-amber-400 text-black' : 'bg-amber-500 text-black';
   return theme === 'dark' ? 'bg-zinc-800 text-zinc-400' : 'bg-zinc-100 text-zinc-500';
+};
+
+const formatBytes = (bytes?: number) => {
+  const value = Number(bytes || 0);
+  if (!value) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const idx = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  return `${(value / Math.pow(1024, idx)).toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
+};
+
+const formatShortDate = (value?: string | null) => {
+  if (!value) return 'not created';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'unknown';
+  return date.toLocaleString();
 };
 
 // --- Components ---
@@ -340,6 +371,7 @@ export default function App() {
   const kernelLogIdRef = React.useRef(0);
   const [metrics, setMetrics] = useState<Metrics>({ steps: [], train_loss: [], val_loss: [], meta: {} });
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [dpoStats, setDpoStats] = useState<DpoStats | null>(null);
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const [kernelAttention, setKernelAttention] = useState<KernelSeverity>('normal');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -424,6 +456,15 @@ export default function App() {
     setLogs(prev => [...prev, ...entries].slice(-1000));
   }, []);
 
+  const fetchDpoStats = React.useCallback(async () => {
+    try {
+      const res = await axios.get('/api/dpo/stats');
+      setDpoStats(res.data);
+    } catch (e) {
+      // DPO stats are supplemental; trainer failures still appear in the kernel logger.
+    }
+  }, []);
+
   // Poll logs and metrics
   useEffect(() => {
     const fetchLogs = async () => {
@@ -451,10 +492,11 @@ export default function App() {
     const interval = setInterval(() => {
       fetchLogs();
       fetchMetrics();
+      if (activeTab === 'dpo') fetchDpoStats();
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [logCursor, appendKernelLogs]);
+  }, [logCursor, appendKernelLogs, activeTab, fetchDpoStats]);
 
   const fetchSettings = async () => {
     try {
@@ -472,6 +514,7 @@ export default function App() {
       if (res.data.dpo_epochs !== undefined) setDpoEpochs(Number(res.data.dpo_epochs));
       if (res.data.dpo_batch_size !== undefined) setDpoBatchSize(Number(res.data.dpo_batch_size));
       if (res.data.is_training !== undefined) setIsTraining(Boolean(res.data.is_training));
+      fetchDpoStats();
     } catch (e) {}
   };
 
@@ -718,6 +761,7 @@ export default function App() {
       });
       alert(res.data.status);
       fetchSettings();
+      fetchDpoStats();
     } catch (e: any) {
       alert(e?.response?.data?.error || "Failed to start DPO.");
       setIsTraining(false);
@@ -729,6 +773,7 @@ export default function App() {
       const res = await axios.post('/api/dpo/flush-feedback');
       alert(res.data.status);
       fetchSettings();
+      fetchDpoStats();
     } catch (e: any) {
       alert(e?.response?.data?.error || "Failed to flush DPO feedback buffer.");
     }
@@ -992,7 +1037,7 @@ export default function App() {
                     <div className={cn("rounded-xl border p-4", theme === 'dark' ? "bg-zinc-950 border-zinc-800" : "bg-zinc-50 border-zinc-100")}>
                       <p className="text-[9px] font-bold uppercase tracking-widest text-zinc-500 mb-1">Active Project</p>
                       <p className={cn("text-sm font-mono font-bold truncate", theme === 'dark' ? "text-zinc-200" : "text-zinc-900")}>{activeProject}</p>
-                      <p className="text-[10px] text-zinc-500 mt-2 truncate">{settings?.project_dir}</p>
+                      <p className="text-[10px] text-zinc-500 dark:text-zinc-400 mt-2 break-all font-mono leading-relaxed">{settings?.project_dir}</p>
                     </div>
                     <div className={cn("rounded-xl border p-4", theme === 'dark' ? "bg-zinc-950 border-zinc-800" : "bg-zinc-50 border-zinc-100")}>
                       <p className="text-[9px] font-bold uppercase tracking-widest text-zinc-500 mb-1">Checkpoint Target</p>
@@ -1668,50 +1713,65 @@ export default function App() {
               <motion.div key="dpo" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8 max-w-6xl mx-auto">
                  <TutorialBox 
                     title="Phase 3: Preference Alignment" 
-                    description="Direct Preference Optimization trains from prompt/chosen/rejected pairs using a frozen reference checkpoint from the SFT model."
+                    description="DPO uses prompt, chosen response, and rejected response pairs to nudge an SFT model toward the answers you prefer."
                     icon={Zap}
                     colorClass="bg-zinc-900 text-white border-zinc-900"
                  />
 
-                 <div className="grid grid-cols-3 gap-8">
-                    <Card title="DPO Training" subtitle="Preference pairs, reference model, and alignment checkpoint" className="col-span-2">
+                 <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
+                    <Card title="DPO Training" subtitle="Preference pairs, reference model, and alignment checkpoint" className="xl:col-span-2">
                        <div className="space-y-6">
                           {!settings?.dpo_ready ? (
-                            <div className="text-center py-12 space-y-4 border border-rose-100 rounded-xl bg-rose-50/60">
-                               <h4 className="font-bold text-rose-900 text-sm uppercase tracking-tight">dpo.py Missing</h4>
-                               <p className="text-[11px] text-rose-600 max-w-[360px] mx-auto leading-relaxed">The UI expects a root-level dpo.py trainer. Restore dpo.py before launching alignment.</p>
+                            <div className={cn("text-center py-12 space-y-4 border rounded-xl", theme === 'dark' ? "bg-rose-950/30 border-rose-900/50" : "bg-rose-50/60 border-rose-100")}>
+                               <h4 className="font-bold text-rose-600 dark:text-rose-300 text-sm uppercase tracking-tight">dpo.py Missing</h4>
+                               <p className="text-[11px] text-rose-600 dark:text-rose-200 max-w-[360px] mx-auto leading-relaxed">The UI expects a root-level dpo.py trainer. Restore dpo.py before launching alignment.</p>
                             </div>
                           ) : (
                             <div className="space-y-8">
+                               <div className={cn("rounded-2xl border p-5 space-y-3", theme === 'dark' ? "bg-zinc-950/50 border-zinc-800" : "bg-zinc-50 border-zinc-200")}>
+                                  <div className="flex items-center gap-2">
+                                    <Info className="w-4 h-4 text-blue-500" />
+                                    <h4 className={cn("text-[11px] font-black uppercase tracking-widest", theme === 'dark' ? "text-zinc-100" : "text-zinc-900")}>Where DPO prompts come from</h4>
+                                  </div>
+                                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed font-medium">
+                                    DPO reads preference pairs from the dataset path below. Each pair needs the original prompt, a preferred response, and a weaker rejected response. Chat Lab thumbs-up/down feedback writes pairs into the active project's DPO dataset automatically, and you can also place your own <code>.jsonl</code> files in that folder.
+                                  </p>
+                                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-[10px] font-semibold">
+                                    <div className={cn("rounded-xl border p-3", theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-300" : "bg-white border-zinc-200 text-zinc-700")}><strong>1.</strong> Test replies in Chat Lab.</div>
+                                    <div className={cn("rounded-xl border p-3", theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-300" : "bg-white border-zinc-200 text-zinc-700")}><strong>2.</strong> Save chosen/rejected pairs.</div>
+                                    <div className={cn("rounded-xl border p-3", theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-300" : "bg-white border-zinc-200 text-zinc-700")}><strong>3.</strong> Start DPO training here.</div>
+                                  </div>
+                               </div>
+
                                <div className="grid grid-cols-2 gap-6">
                                   <div className="space-y-3 text-left col-span-2">
-                                     <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider ml-1">Preference Dataset Path</label>
-                                     <TextField value={dpoDataPath} onChange={(e) => setDpoDataPath(e.target.value)} />
-                                     <p className="text-[9px] text-zinc-400 font-medium px-1">Folder or file containing JSONL/text prompt/chosen/rejected pairs. Chat Lab feedback writes into the active project's DPO dataset folder by default.</p>
+                                     <label className="text-[10px] font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider ml-1">Preference Dataset Path</label>
+                                     <TextField value={dpoDataPath} onChange={(e) => setDpoDataPath(e.target.value)} placeholder={settings?.project_dpo_dir || "projects/haiku_studio/datasets/dpo"} />
+                                     <p className="text-[9px] text-zinc-500 dark:text-zinc-400 font-medium px-1">Use a project DPO folder or a single JSONL/text file. JSONL rows should include prompt, chosen, and rejected fields.</p>
                                   </div>
                                   <div className="space-y-3 text-left">
-                                     <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider ml-1">Beta</label>
+                                     <label className="text-[10px] font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider ml-1">Beta</label>
                                      <NumberField value={dpoBeta} onChange={setDpoBeta} min={0} step={0.01} ariaLabel="DPO beta" />
-                                     <p className="text-[9px] text-zinc-400 font-medium px-1">DPO preference strength against the frozen reference model.</p>
+                                     <p className="text-[9px] text-zinc-500 dark:text-zinc-400 font-medium px-1">Preference strength against the frozen reference model. Lower is stronger; higher is more conservative.</p>
                                   </div>
                                   <div className="space-y-3 text-left">
-                                     <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider ml-1">Alignment LR</label>
+                                     <label className="text-[10px] font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider ml-1">Alignment LR</label>
                                      <NumberField value={dpoLR} onChange={setDpoLR} min={0} step={0.000001} ariaLabel="DPO learning rate" />
-                                     <p className="text-[9px] text-zinc-400 font-medium px-1">Small learning rate for preference optimization.</p>
+                                     <p className="text-[9px] text-zinc-500 dark:text-zinc-400 font-medium px-1">Use a small LR. DPO is an alignment pass, not a new pretraining run.</p>
                                   </div>
                                   <div className="space-y-3 text-left">
-                                     <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider ml-1">Epochs</label>
+                                     <label className="text-[10px] font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider ml-1">Epochs</label>
                                      <NumberField value={dpoEpochs} onChange={setDpoEpochs} min={1} integer ariaLabel="DPO epochs" />
                                   </div>
                                   <div className="space-y-3 text-left">
-                                     <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider ml-1">Batch Size</label>
+                                     <label className="text-[10px] font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider ml-1">Batch Size</label>
                                      <NumberField value={dpoBatchSize} onChange={setDpoBatchSize} min={1} integer ariaLabel="DPO batch size" />
                                   </div>
                                </div>
                                <RunButton onClick={startDPO} disabled={isTraining || !settings?.dpo_ready}>
                                   Start DPO Training
                                </RunButton>
-                               <p className="text-[10px] text-zinc-500 leading-relaxed">
+                               <p className="text-[10px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
                                   If no reference checkpoint exists, dpo.py creates one from the configured SFT policy checkpoint and freezes it. Output saves to {settings?.dpo_checkpoint || 'projects/haiku_studio/checkpoints/model.dpo.pt'}.
                                </p>
                             </div>
@@ -1720,19 +1780,58 @@ export default function App() {
                     </Card>
 
                     <div className="space-y-8">
-                       <Card title="DPO Status">
-                          <div className="space-y-8">
-                             <div className="flex flex-col gap-1 text-left">
-                                <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Preference Pairs</span>
-                                <div className={cn("text-3xl font-bold font-mono tracking-tight", theme === 'dark' ? "text-white" : "text-zinc-900")}>{settings?.dpo_buffer ?? 0} <span className="text-xs text-zinc-400 font-medium tracking-normal">Pairs</span></div>
+                       <Card title="DPO Stats" subtitle="Live from active project files">
+                          <div className="space-y-6">
+                             <div className="grid grid-cols-2 gap-3">
+                               {[
+                                 { label: 'Preference Pairs', value: dpoStats?.preference_pairs ?? settings?.dpo_buffer ?? 0, suffix: 'pairs' },
+                                 { label: 'Dataset Files', value: dpoStats?.file_count ?? 0, suffix: 'files' },
+                                 { label: 'Chat Lab Buffer', value: dpoStats?.feedback_pairs ?? 0, suffix: 'pairs' },
+                                 { label: 'Latest Step', value: dpoStats?.latest_step ?? settings?.dpo_global_step ?? 0, suffix: 'step' }
+                               ].map((stat) => (
+                                 <div key={stat.label} className={cn("rounded-xl border p-4", theme === 'dark' ? "bg-zinc-950/50 border-zinc-800" : "bg-zinc-50 border-zinc-200")}>
+                                   <span className="text-[9px] font-black text-zinc-500 dark:text-zinc-400 uppercase tracking-widest">{stat.label}</span>
+                                   <div className={cn("mt-2 text-2xl font-black font-mono tracking-tight", theme === 'dark' ? "text-white" : "text-zinc-900")}>{stat.value}</div>
+                                   <span className="text-[9px] text-zinc-400 uppercase tracking-wider">{stat.suffix}</span>
+                                 </div>
+                               ))}
                              </div>
-                             <div className="flex flex-col gap-1 text-left">
-                                <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">DPO Eval Step</span>
-                                <div className={cn("text-3xl font-bold font-mono tracking-tight", theme === 'dark' ? "text-white" : "text-zinc-900")}>{settings?.dpo_global_step ?? 0}</div>
+
+                             <div className={cn("rounded-xl border p-4 space-y-2", theme === 'dark' ? "bg-zinc-950/50 border-zinc-800" : "bg-zinc-50 border-zinc-200")}>
+                               <p className="text-[9px] font-black text-zinc-500 dark:text-zinc-400 uppercase tracking-widest">Dataset Source</p>
+                               <p className={cn("text-[10px] font-mono break-all leading-relaxed", theme === 'dark' ? "text-zinc-300" : "text-zinc-700")}>{dpoStats?.dataset_path || settings?.dpo_dataset || settings?.project_dpo_dir || 'projects/haiku_studio/datasets/dpo'}</p>
+                               <p className="text-[9px] text-zinc-500 dark:text-zinc-400">Metrics log: {dpoStats?.log_path || 'projects/haiku_studio/logs/dpo_loss.jsonl'}</p>
                              </div>
-                             <div className="pt-6 border-t border-zinc-100 flex gap-2">
-                                <button onClick={flushDPOFeedback} className="flex-1 py-2.5 bg-zinc-50 hover:bg-zinc-100 border border-zinc-200 text-zinc-600 font-bold rounded-lg text-[9px] uppercase tracking-wider transition-all">Flush Feedback</button>
-                                <button onClick={fetchSettings} className="flex-1 py-2.5 bg-zinc-900 hover:bg-black text-white font-bold rounded-lg text-[9px] uppercase tracking-wider transition-all shadow-lg shadow-zinc-200">Refresh</button>
+
+                             <div className="space-y-2">
+                               <p className="text-[9px] font-black text-zinc-500 dark:text-zinc-400 uppercase tracking-widest">Checkpoint Status</p>
+                               {Object.entries(dpoStats?.checkpoints || {}).map(([key, ckptRaw]) => {
+                                 const ckpt = ckptRaw as { path: string; exists: boolean; size_bytes?: number; modified_at?: string | null };
+                                 return (
+                                   <div key={key} className={cn("rounded-lg border p-3 flex items-start justify-between gap-3", theme === 'dark' ? "bg-zinc-950/50 border-zinc-800" : "bg-white border-zinc-200")}>
+                                     <div className="min-w-0">
+                                       <p className={cn("text-[10px] font-black uppercase tracking-wider", ckpt.exists ? "text-emerald-500" : "text-zinc-400")}>{key} {ckpt.exists ? 'ready' : 'missing'}</p>
+                                       <p className={cn("text-[9px] font-mono break-all", theme === 'dark' ? "text-zinc-500" : "text-zinc-500")}>{ckpt.path}</p>
+                                     </div>
+                                     <div className="text-right shrink-0">
+                                       <p className="text-[9px] font-bold text-zinc-400">{formatBytes(ckpt.size_bytes)}</p>
+                                       <p className="text-[8px] text-zinc-500">{ckpt.exists ? formatShortDate(ckpt.modified_at) : 'not found'}</p>
+                                     </div>
+                                   </div>
+                                 );
+                               })}
+                             </div>
+
+                             {dpoStats?.latest_metrics && (
+                               <div className={cn("rounded-xl border p-4", theme === 'dark' ? "bg-zinc-950/50 border-zinc-800" : "bg-zinc-50 border-zinc-200")}>
+                                  <p className="text-[9px] font-black text-zinc-500 dark:text-zinc-400 uppercase tracking-widest mb-2">Last Metrics Row</p>
+                                  <pre className={cn("text-[9px] whitespace-pre-wrap break-words font-mono", theme === 'dark' ? "text-zinc-300" : "text-zinc-700")}>{JSON.stringify(dpoStats.latest_metrics, null, 2)}</pre>
+                               </div>
+                             )}
+
+                             <div className="pt-2 flex gap-2">
+                                <button onClick={flushDPOFeedback} className={cn("flex-1 py-2.5 border font-bold rounded-lg text-[9px] uppercase tracking-wider transition-all", theme === 'dark' ? "bg-zinc-900 hover:bg-zinc-800 border-zinc-800 text-zinc-200" : "bg-zinc-50 hover:bg-zinc-100 border-zinc-200 text-zinc-700")}>Flush Feedback</button>
+                                <button onClick={() => { fetchSettings(); fetchDpoStats(); }} className={cn("flex-1 py-2.5 border font-bold rounded-lg text-[9px] uppercase tracking-wider transition-all", theme === 'dark' ? "bg-white hover:bg-zinc-100 border-white text-black" : "bg-zinc-900 hover:bg-black border-zinc-900 text-white")}>Refresh</button>
                              </div>
                           </div>
                        </Card>
@@ -1747,371 +1846,155 @@ export default function App() {
               </motion.div>
             )}
 
+
             {activeTab === 'help' && (
-              <motion.div key="help" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-12 max-w-4xl mx-auto pb-32">
-                    <div className="space-y-3 mb-16 pt-8 text-center sm:text-left">
-                       <h1 className={cn("text-2xl font-black tracking-tighter", theme === 'dark' ? "text-white" : "text-zinc-900")}>Technical Field Manual</h1>
-                       <div className="flex items-center justify-center sm:justify-start gap-3">
-                          <span className={cn("px-2.5 py-1 text-[10px] font-black uppercase tracking-widest rounded-lg shadow-sm", theme === 'dark' ? "bg-white text-black" : "bg-black text-white")}>v2.4.0 — STABLE</span>
-                          <p className="text-zinc-400 font-bold text-xs uppercase tracking-widest opacity-80">Official Engineering Reference & Documentation</p>
-                       </div>
-                    </div>
-
-                <div className="space-y-24">
-                   {/* Section 1: Philosophy */}
-                   <section className="space-y-8">
-                      <div className="flex items-center gap-5">
-                         <div className={cn("w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg border", theme === 'dark' ? "bg-zinc-800 border-zinc-700 text-white" : "bg-white border-zinc-200 text-zinc-900")}>
-                            <Zap className="w-7 h-7" />
-                         </div>
-                         <div>
-                            <h3 className="text-lg font-black text-zinc-900 tracking-tight">1. Neural Philosophy & Core Architecture</h3>
-                            <p className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.2em] mt-0.5 opacity-70">Knowledge Pressure & Transformer Synthesis</p>
-                         </div>
-                      </div>
-                      <div className="prose prose-zinc prose-sm max-w-none text-zinc-600 leading-relaxed space-y-6">
-                         <p className="text-sm font-medium leading-loose italic border-l-4 border-zinc-200 pl-6 py-2 bg-zinc-50/50 rounded-r-xl">
-                            "Haiku Studio is not a consumer chat wrapper. It is a high-performance Neural Weight Synthesis Environment designed for the complete lifecycle of LLM creation—from raw knowledge acquisition to human alignment."
-                         </p>
-                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-8 mt-8 text-zinc-500">
-                           <div className="space-y-3">
-                              <h5 className="text-[11px] font-black uppercase tracking-widest text-zinc-900">Static Logic vs. Statistical Pressure</h5>
-                              <p className="text-[12px] font-medium leading-relaxed">
-                                Unlike traditional software, neural networks are not "coded"; they are <strong>pressured</strong> into specific configurations through iterative optimization. Haiku Studio treats the transformer as a blank statistical slate.
-                              </p>
-                           </div>
-                           <div className="space-y-3">
-                              <h5 className="text-[11px] font-black uppercase tracking-widest text-zinc-900">Architecture: RoPE-GQA Core</h5>
-                              <ul className="text-[12px] font-medium space-y-2 list-none">
-                                 <li className="flex gap-2">
-                                    <span className="text-black font-black">RoPE:</span> 
-                                    <span>Rotary Positional Embeddings for infinite context extrapolation by rotating token vectors.</span>
-                                </li>
-                                 <li className="flex gap-2">
-                                    <span className="text-black font-black">GQA:</span> 
-                                    <span>Grouped-Query Attention for high-speed inference of MQA with the understanding of MHA.</span>
-                                </li>
-                              </ul>
-                           </div>
-                         </div>
-                      </div>
-                   </section>
-
-                   {/* Section 2: Topology */}
-                   <section className="space-y-10">
-                      <div className="flex items-center gap-5">
-                         <div className={cn("w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg border", theme === 'dark' ? "bg-zinc-800 border-zinc-700 text-white" : "bg-white border-zinc-200 text-zinc-900")}>
-                            <Globe className="w-7 h-7" />
-                         </div>
-                         <div>
-                            <h3 className="text-lg font-black text-zinc-900 tracking-tight">2. Interface Topology & Navigation</h3>
-                            <p className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.2em] mt-0.5 opacity-70">Navigation Protocol & Engine Monitoring</p>
-                         </div>
-                      </div>
-                      
-                      <div className="space-y-12">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
-                           <div className="space-y-5">
-                              <h4 className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-400 border-b border-zinc-100 pb-2">Primary Sidebar Operations</h4>
-                              <div className="space-y-3">
-                                 {[
-                                    { label: "Home Studio", desc: "Mission control. Central dashboard for project lifecycle management." },
-                                    { label: "Chat Lab", desc: "Interactive verification. Manually assess model reasoning and instruction follow." },
-                                    { label: "Pretraining", desc: "Knowledge acquisition. Foundational training from raw text corpora." },
-                                    { label: "Instruct SFT", desc: "Behavioral shaping. Fine-tuning the base model into an assistant role." },
-                                    { label: "Alignment DPO", desc: "Human alignment. Preference-based optimization using comparative pairs." }
-                                 ].map((item, id) => (
-                                    <div key={id} className="flex gap-4 items-start p-4 bg-zinc-50 border border-zinc-100 rounded-2xl hover:bg-white transition-all hover:shadow-md hover:-translate-y-0.5 pointer-events-none">
-                                       <div className="w-2 h-2 rounded-full bg-zinc-300 mt-1.5" />
-                                       <div className="space-y-1">
-                                          <p className="text-[11px] font-black text-zinc-900 uppercase tracking-widest">{item.label}</p>
-                                          <p className="text-[11px] text-zinc-500 font-medium italic">{item.desc}</p>
-                                       </div>
-                                    </div>
-                                 ))}
-                              </div>
-                           </div>
-                           <div className="space-y-5">
-                              <h4 className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-400 border-b border-zinc-100 pb-2">Global & Terminal Controls</h4>
-                              <div className="space-y-6">
-                                 <div className="p-6 bg-zinc-900 rounded-3xl text-white space-y-4 shadow-xl">
-                                    <div className="flex justify-between items-center border-b border-zinc-800 pb-3">
-                                       <span className="text-[11px] font-black uppercase tracking-widest text-zinc-400">System Kernel</span>
-                                       <div className="flex gap-2">
-                                          <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
-                                          <span className="w-2 h-2 rounded-full bg-amber-500" />
-                                          <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                                       </div>
-                                    </div>
-                                    <p className="text-[11px] text-zinc-400 font-medium leading-relaxed">
-                                       The terminal provides real-time telemetry. In <strong>Diagnostic Mode</strong>, monitor raw loss values, gradient norms, and hardware status. Check here for OOM (Out of Memory) or NaN Gradient warnings.
-                                    </p>
-                                    <div className="pt-4 grid grid-cols-2 gap-4">
-                                       <div className="space-y-1">
-                                          <span className="text-[10px] font-black text-zinc-500 uppercase">Input Selector</span>
-                                          <p className="text-[10px] font-bold text-zinc-300">Switch project containers.</p>
-                                       </div>
-                                       <div className="space-y-1">
-                                          <span className="text-[10px] font-black text-zinc-500 uppercase">Deploy Pipeline</span>
-                                          <p className="text-[10px] font-bold text-zinc-300">Serialize weight tensors.</p>
-                                       </div>
-                                    </div>
-                                 </div>
-                              </div>
-                           </div>
-                        </div>
-                      </div>
-                   </section>
-
-                   {/* Section 3: Chat Lab */}
-                   <section className="space-y-10">
-                      <div className="flex items-center gap-5">
-                         <div className={cn("w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg border", theme === 'dark' ? "bg-zinc-800 border-zinc-700 text-white" : "bg-white border-zinc-200 text-zinc-900")}>
-                            <MessagesSquare className="w-7 h-7" />
-                         </div>
-                         <div>
-                            <h3 className="text-lg font-black text-zinc-900 tracking-tight">3. Qualitative Assessment: Chat Lab</h3>
-                            <p className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.2em] mt-0.5 opacity-70">Dialog Verification & Preference collection</p>
-                         </div>
-                      </div>
-                      <div className="space-y-8">
-                         <p className="text-[13px] text-zinc-500 font-medium leading-relaxed max-w-3xl">
-                            Loss curves are important, but dialogue is the ultimate test. The Chat Lab allows you to verify reasoning fluidity and protocol adherence in real-time.
-                         </p>
-                         <div className="p-10 bg-zinc-950 rounded-[2.5rem] text-white shadow-2xl relative overflow-hidden group">
-                           <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:opacity-20 transition-opacity">
-                              <Terminal className="w-40 h-40 rotate-12" />
-                           </div>
-                           <h4 className="text-[12px] font-black uppercase tracking-[0.3em] mb-8 text-zinc-500 border-b border-zinc-900 pb-4">Sampling Knob Engineering</h4>
-                           <div className="grid grid-cols-1 md:grid-cols-2 gap-12 relative z-10">
-                              <div className="space-y-4">
-                                 <span className="text-[11px] font-black text-emerald-500 uppercase tracking-widest flex items-center gap-2">
-                                    Temperature <div className="h-0.5 flex-1 bg-zinc-900" />
-                                 </span>
-                                 <p className="text-[12px] text-zinc-400 leading-relaxed font-medium">
-                                    Adjusts token probability entropy. 
-                                    <span className="block mt-4 text-[10px] font-black text-zinc-600 italic">Hint: 0.7 for logic, 1.2+ for creative brainstorming.</span>
-                                 </p>
-                              </div>
-                              <div className="space-y-4">
-                                 <span className="text-[11px] font-black text-blue-500 uppercase tracking-widest flex items-center gap-2">
-                                    Presence Penalty <div className="h-0.5 flex-1 bg-zinc-900" />
-                                 </span>
-                                 <p className="text-[12px] text-zinc-400 leading-relaxed font-medium">
-                                    Prevents linguistic loops by penalizing tokens that have already appeared in the current context windown.
-                                 </p>
-                              </div>
-                           </div>
-                           <div className="mt-12 pt-8 border-t border-zinc-900 flex flex-col sm:flex-row items-center gap-6">
-                              <div className="flex gap-2">
-                                 <div className="w-10 h-10 rounded-full bg-zinc-900 p-2.5 text-emerald-500 flex items-center justify-center border border-zinc-800"><ThumbsUp className="w-5 h-5" /></div>
-                                 <div className="w-10 h-10 rounded-full bg-zinc-900 p-2.5 text-rose-500 flex items-center justify-center border border-zinc-800"><ThumbsDown className="w-5 h-5" /></div>
-                              </div>
-                              <div>
-                                 <h5 className="text-[11px] font-black uppercase tracking-widest text-zinc-200">The Preference Loop</h5>
-                                 <p className="text-[11px] text-zinc-500 font-medium">Feedback flagged here directly populates your <strong>Phase 3 DPO Buffer</strong> for reinforcement training.</p>
-                              </div>
-                           </div>
-                         </div>
-                      </div>
-                   </section>
-
-                   {/* Section 4: Pretraining */}
-                   <section className="space-y-12">
-                      <div className="flex items-center gap-5">
-                         <div className={cn("w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg border", theme === 'dark' ? "bg-zinc-800 border-zinc-700 text-white" : "bg-white border-zinc-200 text-zinc-900")}>
-                            <Database className="w-7 h-7" />
-                         </div>
-                         <div>
-                            <h3 className="text-lg font-black text-zinc-900 tracking-tight">4. Phase 1: Foundational Pretraining</h3>
-                            <p className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.2em] mt-0.5 opacity-70">Infinite Data Ingestion & knowledge Acquisition</p>
-                         </div>
-                      </div>
-
-                       <div className="space-y-10">
-                          <div className="grid grid-cols-1 md:grid-cols-5 gap-10">
-                             <div className="md:col-span-3 space-y-6">
-                                <h4 className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-900 border-l-4 border-black pl-4">Recursive Multi-File Streamer</h4>
-                                <p className="text-xs text-zinc-500 font-medium leading-relaxed">
-                                   Point the engine to any local directory. The pretraining kernel scans for raw <code>.txt</code> data, creates an <strong>Inter-Doc Buffer</strong>, and packs tokens into full context windows (e.g., 2048) to maximize hardware FLOPs utilization.
-                                </p>
-                                <div className="space-y-2 pt-4">
-                                   <div className="flex items-center gap-3">
-                                      <div className="w-1.5 h-1.5 rounded-full bg-zinc-900" />
-                                      <p className="text-[11px] font-bold text-zinc-600 uppercase tracking-widest">LR Strategy: Linear Warmup + Cosine Decay</p>
-                                   </div>
-                                   <p className="text-[11px] text-zinc-400 font-medium pl-4">Allows weights to stabilize during initial steps before aggressive optimization triggers.</p>
-                                </div>
-                             </div>
-                             <div className="md:col-span-2 space-y-6">
-                                <h4 className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-400">Success Indicators</h4>
-                                <div className="p-6 bg-zinc-50 border border-zinc-100 rounded-3xl space-y-4">
-                                   <div className="space-y-1">
-                                      <p className="text-[10px] font-black text-black uppercase">Training Loss</p>
-                                      <p className="text-[10px] text-zinc-500 font-medium">Logarithmic descent target. Spikes usually indicate LR is too high.</p>
-                                   </div>
-                                   <div className="space-y-1 border-t border-zinc-200 pt-4">
-                                      <p className="text-[10px] font-black text-black uppercase">Perplexity (PPL)</p>
-                                      <p className="text-[10px] text-zinc-500 font-medium">Measurement of next-token surprise. Targets for base stability are typically &lt; 15.0.</p>
-                                   </div>
-                                </div>
-                             </div>
-                          </div>
-                       </div>
-                   </section>
-
-                   {/* Section 5: SFT */}
-                   <section className="space-y-10">
-                      <div className="flex items-center gap-5">
-                         <div className={cn("w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg border", theme === 'dark' ? "bg-zinc-800 border-zinc-700 text-white" : "bg-white border-zinc-200 text-zinc-900")}>
-                            <Brain className="w-7 h-7" />
-                         </div>
-                         <div>
-                            <h3 className="text-lg font-black text-zinc-900 tracking-tight">5. Phase 2: Instruct Tuning (SFT)</h3>
-                            <p className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.2em] mt-0.5 opacity-70">Supervised Fine-Tuning & Protocol Formatting</p>
-                         </div>
-                      </div>
-                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
-                         <div className="space-y-6">
-                            <p className="text-sm font-medium text-zinc-500 leading-relaxed">
-                               SFT transforms a neutral knowledge base into a specific assistant persona. Protocol requires structured <strong>JSONL</strong> multi-turn dialogue data.
-                            </p>
-                            <div className="p-6 bg-amber-50 border border-amber-100 rounded-2xl space-y-3">
-                               <h5 className="text-[10px] font-black uppercase tracking-widest text-amber-900 flex items-center gap-2"><Lock className="w-3 h-3" /> Gradient Masking</h5>
-                               <p className="text-[11px] text-amber-800 font-medium leading-relaxed">
-                                  Haiku Studio identifies <code>user:</code> and <code>bot:</code> tokens. It applies 0.0 weight to user prompts, ensuring the model only learns the assistant's predictive behavior.
-                               </p>
-                            </div>
-                         </div>
-                         <div className="space-y-6">
-                            <h4 className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-400 border-b border-zinc-100 pb-2">The Golden Data Format</h4>
-                            <div className="bg-zinc-900 rounded-2xl p-5 font-mono text-[10px] text-zinc-400 border border-zinc-800 shadow-inner overflow-x-auto whitespace-pre leading-loose">
-                               <span className="text-zinc-600">// JSONL Entry format</span>{"\n"}
-                               {"{"}"text": "<span className="text-emerald-500">user:</span> How do I synthesize salts?\n<span className="text-blue-500">bot:</span> Salt synthesis involves..."{"}"}
-                            </div>
-                            <p className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.2em] text-center pt-2 italic">Optimal Pass: 1-3 Epochs on High-Quality Corpora.</p>
-                         </div>
-                      </div>
-                   </section>
-
-                   {/* Section 6: DPO */}
-                   <section className="space-y-12">
-                      <div className="flex items-center gap-4">
-                         <div className={cn("w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg border", theme === 'dark' ? "bg-zinc-800 border-zinc-700 text-white" : "bg-white border-zinc-200 text-zinc-900")}>
-                            <Zap className="w-7 h-7" />
-                         </div>
-                         <div>
-                            <h3 className="text-lg font-black text-zinc-900 tracking-tight">6. Phase 3: Alignment (DPO)</h3>
-                            <p className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.2em] mt-0.5 opacity-70">Direct Preference Optimization & Human Alignment</p>
-                         </div>
-                      </div>
-                      <div className="p-12 border-2 border-dashed border-zinc-200 rounded-[3rem] space-y-10 bg-zinc-50/30">
-                         <div className="space-y-4 max-w-2xl">
-                            <h4 className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-900">The Reference Model Invariant</h4>
-                            <p className="text-xs text-zinc-500 leading-relaxed font-medium">
-                               DPO requires a persistent <strong>Reference Model</strong>—a static snapshot of your model BEFORE DPO starts. The math compares log-probabilities between the two to ensure preference without losing general reasoning intelligence.
-                            </p>
-                         </div>
-                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-16 border-t border-zinc-200 pt-10">
-                            <div className="space-y-4">
-                               <span className="text-[11px] font-black text-rose-500 uppercase tracking-widest flex items-center gap-2">Beta (KL Constraint) <Info className="w-3 h-3" /></span>
-                               <p className="text-[12px] text-zinc-400 leading-relaxed font-medium italic">
-                                  <strong>High Beta (0.5+):</strong> Stable, subtle alignment.{"\n"}
-                                  <strong>Low Beta (0.1-0.3):</strong> Drastic shifts, higher risk of "Model Collapse."
-                               </p>
-                            </div>
-                            <div className="space-y-4">
-                               <span className="text-[11px] font-black text-zinc-900 uppercase tracking-widest">The Comparative Gate</span>
-                               <p className="text-[12px] text-zinc-400 leading-relaxed font-medium italic">
-                                  Updates only trigger when the Preference Buffer reaches your batch ceiling. Ensure your Chat Lab evaluations are diverse.
-                               </p>
-                            </div>
-                         </div>
-                      </div>
-                   </section>
-
-                   {/* Section 7: HF */}
-                   <section className="space-y-10">
-                      <div className="flex items-center gap-5">
-                         <div className={cn("w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg border", theme === 'dark' ? "bg-zinc-800 border-zinc-700 text-white" : "bg-white border-zinc-200 text-zinc-900")}>
-                            <HuggingFaceIcon className="w-8 h-8" />
-                         </div>
-                         <div>
-                            <h3 className="text-lg font-black text-zinc-900 tracking-tight">7. External Integration: Hugging Face Ecosystem</h3>
-                            <p className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.2em] mt-0.5 opacity-70">Direct Hub Ingestion & Weight Publishing</p>
-                         </div>
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
-                        <div className="p-8 bg-zinc-900 rounded-[2rem] text-white shadow-2xl space-y-6">
-                           <h4 className="text-[11px] font-black uppercase tracking-widest text-emerald-400">A. Hub Sync (Datasets)</h4>
-                           <p className="text-[11px] text-zinc-400 font-medium leading-relaxed">
-                              Search trillions of tokens directly from the dataset hub. This bypasses manual sharding. Haiku Studio streams relevant shards into your project containers automatically.
-                           </p>
-                           <div className="flex gap-2">
-                              <span className="px-2 py-0.5 bg-zinc-800 text-[9px] font-bold text-zinc-500 rounded uppercase">Streaming Enabled</span>
-                              <span className="px-2 py-0.5 bg-zinc-800 text-[9px] font-bold text-zinc-500 rounded uppercase">Auto-Auth</span>
-                           </div>
-                        </div>
-                        <div className="p-8 bg-zinc-900 rounded-[2rem] text-white shadow-2xl space-y-6">
-                           <h4 className="text-[11px] font-black uppercase tracking-widest text-blue-400">B. Global Push (Weights)</h4>
-                           <p className="text-[11px] text-zinc-400 font-medium leading-relaxed">
-                              Export your finalized weights via Secure Multipart Upload. System auto-generates <code>config.json</code> and weights in <code>.safetensors</code> format for instant cloud deployment.
-                           </p>
-                           <div className="flex items-center gap-2 text-[9px] font-black text-zinc-500 uppercase tracking-widest">
-                              <Lock className="w-3 h-3" /> Requires Write Token (hf_...)
-                           </div>
-                        </div>
-                      </div>
-                   </section>
-
-                   {/* Section 8: Diagnostics */}
-                   <section className="space-y-10">
-                      <div className="flex items-center gap-5">
-                         <div className={cn("w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg border", theme === 'dark' ? "bg-zinc-800 border-zinc-700 text-white" : "bg-white border-zinc-200 text-zinc-900")}>
-                            <HelpCircle className="w-7 h-7" />
-                         </div>
-                         <div>
-                            <h3 className="text-lg font-black text-zinc-900 tracking-tight">8. System Diagnostics & Troubleshooting</h3>
-                            <p className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.2em] mt-0.5 opacity-70">Engineering Resolution Protocols</p>
-                         </div>
-                      </div>
-                      <div className="space-y-6">
-                         {[
-                            { q: "Case 701: The Kernel Stutter", s: "Terminal/UI freezes for 5-15 seconds.", r: "Checkpoint Serialization. Writing weights (~2GB+) to disk is a blocking I/O operation. Increase interval if on HDD." },
-                            { q: "Case 804: Attention Collapse", s: "Model repeats same phrase or exits prematurely.", r: "Gradient Explosion. Decrease Learning Rate immediately. This occurs when 1 layer's weight magnitude drowns the rest." },
-                            { q: "Case 902: VRAM Fragmentation", s: "OOM errors despite sufficient device memory.", r: "Use the 'Re-scan Device' toggle in Settings. This triggers garbage collection and defragments the VRAM pool." }
-                         ].map((item, i) => (
-                            <div key={i} className="p-10 bg-white border border-zinc-100 rounded-[2rem] space-y-6 shadow-sm border-b-4 border-b-zinc-200">
-                               <div className="flex justify-between items-center group">
-                                 <h4 className="text-sm font-black text-zinc-900 uppercase tracking-widest">{item.q}</h4>
-                                 <div className="w-10 h-10 rounded-full bg-zinc-50 border border-zinc-100 flex items-center justify-center group-hover:bg-black group-hover:text-white transition-all text-zinc-400"><BookOpen className="w-4 h-4" /></div>
-                               </div>
-                               <div className="grid grid-cols-1 sm:grid-cols-2 gap-10">
-                                  <div className="space-y-2">
-                                     <span className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.2em]">Observation Symptoms</span>
-                                     <p className="text-[12px] text-zinc-500 font-bold italic leading-relaxed">{item.s}</p>
-                                  </div>
-                                  <div className="space-y-2 border-l border-zinc-100 pl-8">
-                                     <span className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.2em]">Engineering Resolution</span>
-                                     <p className="text-[12px] text-zinc-600 font-medium leading-relaxed italic">{item.r}</p>
-                                  </div>
-                               </div>
-                            </div>
-                         ))}
-                      </div>
-                   </section>
-
-                   <footer className="pt-24 border-t border-zinc-100 text-center space-y-4">
-                      <div className="flex items-center justify-center gap-6 opacity-30">
-                         <div className="h-px w-20 bg-zinc-300" />
-                         <Globe className="w-5 h-5 text-zinc-900" />
-                         <div className="h-px w-20 bg-zinc-300" />
-                      </div>
-                      <p className="text-[11px] font-black text-zinc-300 uppercase tracking-[0.5em]">
-                         © 2026 ROOTCOMPUTER DEVELOPMENT — PRODUCTION REFERENCE
-                      </p>
-                   </footer>
+              <motion.div key="help" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-10 max-w-5xl mx-auto pb-32">
+                <div className="space-y-4 pt-8 text-center sm:text-left">
+                  <div className="flex flex-wrap items-center justify-center sm:justify-start gap-3">
+                    <span className={cn("px-2.5 py-1 text-[10px] font-black uppercase tracking-widest rounded-lg", theme === 'dark' ? "bg-white text-black" : "bg-black text-white")}>Field Manual</span>
+                    <span className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.2em]">Beginner Workflow Guide</span>
+                  </div>
+                  <h1 className={cn("text-3xl font-black tracking-tight", theme === 'dark' ? "text-white" : "text-zinc-900")}>Using Haiku Studio</h1>
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400 font-medium leading-relaxed max-w-3xl">
+                    Haiku Studio is a local desktop workspace for building and testing small transformer language models. The UI manages projects, tokenizers, training runs, metrics, checkpoints, and chat testing while the h2 Python trainers do the actual model work behind the scenes.
+                  </p>
                 </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {[
+                    { label: '1. Create or load a project', desc: 'A project is the persistent folder for tokenizer, config, datasets, logs, and checkpoints.', icon: Database },
+                    { label: '2. Build or restore tokenizer', desc: 'Use a text file or corpus folder to create data/tokenizer.json, or restore the bundled default tokenizer.', icon: FileText },
+                    { label: '3. Train and evaluate', desc: 'Run pretraining, SFT, optional DPO, then test checkpoints in Chat Lab.', icon: Brain }
+                  ].map((item) => {
+                    const Icon = item.icon;
+                    return (
+                      <div key={item.label} className={cn("rounded-2xl border p-5 space-y-3", theme === 'dark' ? "bg-zinc-950/50 border-zinc-800" : "bg-white border-zinc-200 shadow-sm")}>
+                        <Icon className="w-5 h-5 text-emerald-500" />
+                        <h3 className={cn("text-sm font-black", theme === 'dark' ? "text-white" : "text-zinc-900")}>{item.label}</h3>
+                        <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed font-medium">{item.desc}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <section className="space-y-5">
+                  <h2 className={cn("text-xl font-black tracking-tight", theme === 'dark' ? "text-white" : "text-zinc-900")}>Project system</h2>
+                  <div className={cn("rounded-2xl border p-6 space-y-4", theme === 'dark' ? "bg-zinc-950/50 border-zinc-800" : "bg-zinc-50 border-zinc-200")}>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400 leading-relaxed font-medium">
+                      Projects are the source of truth. The <code>data/</code> folder is still used as the runtime staging area because the h2 trainers expect it, but Haiku Studio syncs the active project into <code>data/</code> before jobs run and saves outputs back into the project folder.
+                    </p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-[11px] font-mono">
+                      {[
+                        'projects/<name>/tokenizer.json',
+                        'projects/<name>/config/gpt_config.json',
+                        'projects/<name>/datasets/corpus',
+                        'projects/<name>/datasets/sft',
+                        'projects/<name>/datasets/dpo',
+                        'projects/<name>/checkpoints',
+                        'projects/<name>/logs',
+                        'projects/<name>/cache'
+                      ].map((pathLabel) => (
+                        <div key={pathLabel} className={cn("rounded-xl border px-4 py-3 break-all", theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-300" : "bg-white border-zinc-200 text-zinc-700")}>{pathLabel}</div>
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
+                      Use <strong>Load Project Into Data</strong> when you want the selected project copied into the runtime folder. Use <strong>Save Runtime To Project</strong> when you want current runtime files copied back into the active project.
+                    </p>
+                  </div>
+                </section>
+
+                <section className="space-y-5">
+                  <h2 className={cn("text-xl font-black tracking-tight", theme === 'dark' ? "text-white" : "text-zinc-900")}>Tokenizer workflow</h2>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                    <div className={cn("rounded-2xl border p-6 space-y-4", theme === 'dark' ? "bg-zinc-950/50 border-zinc-800" : "bg-white border-zinc-200 shadow-sm")}>
+                      <h3 className={cn("text-sm font-black", theme === 'dark' ? "text-white" : "text-zinc-900")}>When to use the bundled tokenizer</h3>
+                      <p className="text-[12px] text-zinc-500 dark:text-zinc-400 leading-relaxed font-medium">
+                        Use the prebuilt tokenizer when you want to start quickly or keep compatibility with existing checkpoints. The restore button copies the bundled tokenizer into <code>data/tokenizer.json</code> and into the active project.
+                      </p>
+                    </div>
+                    <div className={cn("rounded-2xl border p-6 space-y-4", theme === 'dark' ? "bg-zinc-950/50 border-zinc-800" : "bg-white border-zinc-200 shadow-sm")}>
+                      <h3 className={cn("text-sm font-black", theme === 'dark' ? "text-white" : "text-zinc-900")}>When to build a custom tokenizer</h3>
+                      <p className="text-[12px] text-zinc-500 dark:text-zinc-400 leading-relaxed font-medium">
+                        Build a tokenizer from either one representative text file or a corpus folder. A domain-specific tokenizer can help if your training data has unusual words, code, game names, usernames, or formatting that the default tokenizer does not handle well.
+                      </p>
+                    </div>
+                  </div>
+                  <div className={cn("rounded-2xl border p-5", theme === 'dark' ? "bg-amber-950/20 border-amber-900/40" : "bg-amber-50 border-amber-200")}>
+                    <p className="text-[12px] text-amber-800 dark:text-amber-200 leading-relaxed font-semibold">
+                      Tokenizer training can use a lot of RAM on very large corpora. The RAM guard samples large inputs instead of loading everything at once. If no file or folder is selected, the app should stop and show an error rather than guessing.
+                    </p>
+                  </div>
+                </section>
+
+                <section className="space-y-5">
+                  <h2 className={cn("text-xl font-black tracking-tight", theme === 'dark' ? "text-white" : "text-zinc-900")}>Training phases</h2>
+                  <div className="space-y-4">
+                    {[
+                      { title: 'Pretraining', icon: Cpu, body: 'Teaches the base model general next-token prediction from raw text. Use the corpus dataset folder. This is the longest and most hardware-intensive phase.' },
+                      { title: 'SFT', icon: MessagesSquare, body: 'Teaches assistant behavior using user:/bot: dialogue samples. The trainer masks user turns and learns from bot replies.' },
+                      { title: 'DPO', icon: Zap, body: 'Aligns the SFT model with preference pairs. Each pair has a prompt, a chosen answer, and a rejected answer. DPO uses a frozen reference model so alignment does not drift too far from the policy model.' }
+                    ].map((item) => {
+                      const Icon = item.icon;
+                      return (
+                        <div key={item.title} className={cn("rounded-2xl border p-5 flex gap-4", theme === 'dark' ? "bg-zinc-950/50 border-zinc-800" : "bg-white border-zinc-200 shadow-sm")}>
+                          <div className={cn("w-11 h-11 rounded-xl flex items-center justify-center shrink-0", theme === 'dark' ? "bg-zinc-900 text-zinc-200" : "bg-zinc-100 text-zinc-900")}><Icon className="w-5 h-5" /></div>
+                          <div>
+                            <h3 className={cn("text-sm font-black", theme === 'dark' ? "text-white" : "text-zinc-900")}>{item.title}</h3>
+                            <p className="text-[12px] text-zinc-500 dark:text-zinc-400 leading-relaxed font-medium mt-1">{item.body}</p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className="space-y-5">
+                  <h2 className={cn("text-xl font-black tracking-tight", theme === 'dark' ? "text-white" : "text-zinc-900")}>DPO data format</h2>
+                  <div className={cn("rounded-2xl border p-6 space-y-4", theme === 'dark' ? "bg-zinc-950/50 border-zinc-800" : "bg-zinc-50 border-zinc-200")}>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400 leading-relaxed font-medium">
+                      The DPO tab reads from the active project DPO dataset path. Chat Lab can create feedback pairs automatically, and you can also add JSONL files manually.
+                    </p>
+                    <pre className={cn("rounded-xl p-4 text-[11px] overflow-x-auto font-mono", theme === 'dark' ? "bg-zinc-900 text-zinc-300" : "bg-white text-zinc-700 border border-zinc-200")}>{`{"prompt":"user: Explain X\nbot:","chosen":"Clear preferred answer.","rejected":"Weaker answer."}`}</pre>
+                    <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
+                      Good DPO pairs should compare two answers to the same prompt. Do not use unrelated chosen/rejected text. Keep the preferred answer genuinely better, not just longer.
+                    </p>
+                  </div>
+                </section>
+
+                <section className="space-y-5">
+                  <h2 className={cn("text-xl font-black tracking-tight", theme === 'dark' ? "text-white" : "text-zinc-900")}>Kernel output and errors</h2>
+                  <div className={cn("rounded-2xl border p-6 space-y-4", theme === 'dark' ? "bg-zinc-950/50 border-zinc-800" : "bg-white border-zinc-200 shadow-sm")}>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400 leading-relaxed font-medium">
+                      The System Kernel Output panel shows backend logs from tokenizer training, pretraining, SFT, DPO, project sync, and app startup. Serious failures open the kernel automatically and are highlighted red. Warnings and non-fatal issues are highlighted yellow.
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-[11px] font-semibold">
+                      <div className="rounded-xl border border-rose-300 bg-rose-50 text-rose-900 dark:bg-rose-950/40 dark:text-rose-100 dark:border-rose-800 p-3"><AlertTriangle className="w-4 h-4 mb-2" />Red means action required.</div>
+                      <div className="rounded-xl border border-amber-300 bg-amber-50 text-amber-900 dark:bg-amber-950/40 dark:text-amber-100 dark:border-amber-800 p-3"><AlertTriangle className="w-4 h-4 mb-2" />Yellow means warning or fallback.</div>
+                      <div className={cn("rounded-xl border p-3", theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-300" : "bg-zinc-50 border-zinc-200 text-zinc-700")}><Terminal className="w-4 h-4 mb-2" />Clear Buffer resets only the visible log panel.</div>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="space-y-5">
+                  <h2 className={cn("text-xl font-black tracking-tight", theme === 'dark' ? "text-white" : "text-zinc-900")}>Common beginner mistakes</h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {[
+                      ['Changing tokenizer mid-project', 'Changing tokenizers after training makes old checkpoints incompatible unless the vocab is identical.'],
+                      ['Training DPO before SFT', 'DPO expects a policy model that already knows how to answer. Run SFT first.'],
+                      ['Using too much learning rate', 'If loss spikes, repeats, or collapses, lower the learning rate and resume from a better checkpoint.'],
+                      ['Forgetting active project', 'Check the top bar before training. Outputs save under the active project folder.']
+                    ].map(([title, body]) => (
+                      <div key={title} className={cn("rounded-2xl border p-5", theme === 'dark' ? "bg-zinc-950/50 border-zinc-800" : "bg-white border-zinc-200 shadow-sm")}>
+                        <h3 className={cn("text-sm font-black", theme === 'dark' ? "text-white" : "text-zinc-900")}>{title}</h3>
+                        <p className="text-[12px] text-zinc-500 dark:text-zinc-400 leading-relaxed font-medium mt-2">{body}</p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                <footer className="pt-10 border-t border-[var(--border)] text-center">
+                  <p className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.35em]">ROOTCOMPUTER · Haiku Studio</p>
+                </footer>
               </motion.div>
             )}
           </AnimatePresence>
@@ -2481,22 +2364,24 @@ export default function App() {
                              <div className="grid grid-cols-1 gap-2">
                                 {projects.map((p, i) => (
                                   <div key={i} className={cn(
-                                    "p-4 rounded-xl border flex items-center justify-between group transition-all duration-200",
+                                    "p-4 rounded-xl border flex items-center justify-between group transition-all duration-200 gap-4",
                                     activeProject === p 
-                                      ? (theme === 'dark' ? "bg-white border-white text-black" : "bg-zinc-900 border-zinc-900 text-white shadow-xl shadow-zinc-200/50") 
-                                      : "bg-white dark:bg-zinc-900/40 border-zinc-100 dark:border-zinc-800 text-zinc-900 dark:text-white hover:border-zinc-300"
+                                      ? (theme === 'dark' ? "bg-emerald-500/10 border-emerald-500/40 text-white" : "bg-emerald-50 border-emerald-200 text-zinc-900 shadow-sm") 
+                                      : (theme === 'dark' ? "bg-zinc-950/40 border-zinc-800 text-zinc-200 hover:border-zinc-700" : "bg-white border-zinc-200 text-zinc-900 hover:border-zinc-300")
                                   )}>
-                                     <div className="flex items-center gap-4">
-                                        <div className={cn("w-2 h-2 rounded-full", activeProject === p ? "bg-emerald-500" : "bg-zinc-200 dark:bg-zinc-700")} />
-                                        <div className="flex flex-col">
-                                           <span className="text-sm font-bold tracking-tight">{p}</span>
-                                           <span className={cn("text-[9px] font-semibold opacity-50 font-mono", activeProject === p ? "text-zinc-400" : "text-zinc-500")}>/PROJECTS/{p}</span>
+                                     <div className="flex items-start gap-4 min-w-0">
+                                        <div className={cn("w-2 h-2 rounded-full mt-1.5 shrink-0", activeProject === p ? "bg-emerald-500" : "bg-zinc-300 dark:bg-zinc-700")} />
+                                        <div className="flex flex-col min-w-0">
+                                           <span className="text-sm font-bold tracking-tight truncate">{p}</span>
+                                           <span className={cn("text-[10px] font-mono break-all leading-relaxed", activeProject === p ? "text-emerald-700 dark:text-emerald-300" : "text-zinc-500 dark:text-zinc-400")}>projects/{p}</span>
                                         </div>
                                      </div>
-                                     {activeProject !== p && (
-                                       <button onClick={() => loadProject(p)} className="px-3 py-1.5 bg-zinc-900 dark:bg-white text-white dark:text-black text-[9px] font-bold uppercase tracking-wider rounded-lg opacity-0 group-hover:opacity-100 transition-all">
+                                     {activeProject !== p ? (
+                                       <button onClick={() => loadProject(p)} className={cn("px-3 py-1.5 text-[9px] font-bold uppercase tracking-wider rounded-lg border transition-all shrink-0", theme === 'dark' ? "bg-zinc-900 border-zinc-700 text-zinc-200 hover:bg-zinc-800" : "bg-zinc-900 border-zinc-900 text-white hover:bg-black")}>
                                           MOUNT
                                        </button>
+                                     ) : (
+                                       <span className="px-3 py-1.5 text-[9px] font-black uppercase tracking-wider rounded-lg bg-emerald-500 text-white shrink-0">Active</span>
                                      )}
                                   </div>
                                 ))}
