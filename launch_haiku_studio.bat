@@ -40,7 +40,11 @@ if "%NEED_INSTALL%"=="1" (
   >> logs\launcher.log echo [Haiku Studio] node_modules already present; skipping npm install
 )
 
-if not exist dist\index.html (
+set NEED_BUILD=0
+if not exist dist\index.html set NEED_BUILD=1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$dist='dist/index.html'; if (!(Test-Path $dist)) { exit 2 }; $d=(Get-Item $dist).LastWriteTimeUtc; $roots=@('src','public'); $files=@(); foreach($r in $roots){ if(Test-Path $r){ $files += Get-ChildItem $r -Recurse -File } }; foreach($f in @('index.html','package.json','vite.config.ts','vite.config.js')){ if(Test-Path $f){ $files += Get-Item $f } }; $newer=$files | Where-Object { $_.LastWriteTimeUtc -gt $d } | Select-Object -First 1; if ($newer) { exit 3 } else { exit 0 }" >nul 2>nul
+if errorlevel 3 set NEED_BUILD=1
+if "%NEED_BUILD%"=="1" (
   echo [Haiku Studio] Building desktop UI bundle...
   >> logs\launcher.log echo [Haiku Studio] npm run build
   call npm run build >> logs\launcher.log 2>&1
@@ -49,6 +53,8 @@ if not exist dist\index.html (
     pause
     exit /b 1
   )
+) else (
+  >> logs\launcher.log echo [Haiku Studio] dist bundle is current; skipping build
 )
 
 set HAIKU_STUDIO_PORT=39177
