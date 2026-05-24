@@ -132,6 +132,252 @@ function projectTokenizerPath(projectName?: string): string {
   return path.join(ensureProjectDir(projectName || activeProjectName()), "tokenizer.json");
 }
 
+
+function projectAbs(projectName: string | undefined, ...parts: string[]): string {
+  return path.join(ensureProjectDir(projectName || activeProjectName()), ...parts);
+}
+
+function projectRel(projectName: string | undefined, ...parts: string[]): string {
+  return relToRepo(projectAbs(projectName, ...parts));
+}
+
+function projectConfigPath(projectName?: string): string {
+  return projectAbs(projectName || activeProjectName(), "config", "gpt_config.json");
+}
+
+function ensureProjectFolders(projectName?: string): JsonObject {
+  const name = safeProjectName(projectName || activeProjectName());
+  const root = ensureProjectDir(name);
+  const folders = {
+    root,
+    config_dir: path.join(root, "config"),
+    checkpoints_dir: path.join(root, "checkpoints"),
+    logs_dir: path.join(root, "logs"),
+    cache_dir: path.join(root, "cache"),
+    pretokenized_cache_dir: path.join(root, "cache", "pretokenized"),
+    datasets_dir: path.join(root, "datasets"),
+    corpus_dir: path.join(root, "datasets", "corpus"),
+    sft_dir: path.join(root, "datasets", "sft"),
+    dpo_dir: path.join(root, "datasets", "dpo"),
+  };
+  for (const dir of Object.values(folders)) fs.mkdirSync(String(dir), { recursive: true });
+  for (const keep of [folders.corpus_dir, folders.sft_dir, folders.dpo_dir]) {
+    const f = path.join(keep, ".gitkeep");
+    if (!fs.existsSync(f)) fs.writeFileSync(f, "", "utf8");
+  }
+  return folders;
+}
+
+function defaultProjectPaths(projectName?: string): JsonObject {
+  const name = safeProjectName(projectName || activeProjectName());
+  return {
+    data_dir: "data",
+    tokenizer_path: "data/tokenizer.json",
+    corpus_dir: projectRel(name, "datasets", "corpus"),
+    sft_dataset: projectRel(name, "datasets", "sft"),
+    dpo_dataset: projectRel(name, "datasets", "dpo"),
+    pretokenized_cache_dir: projectRel(name, "cache", "pretokenized"),
+    sft_cache: projectRel(name, "cache", "sft_cache.pt"),
+    dpo_cache: projectRel(name, "cache", "dpo_cache.pt"),
+    pretrain_checkpoint: projectRel(name, "checkpoints", "model.pt"),
+    pretrain_best_checkpoint: projectRel(name, "checkpoints", "model.best.pt"),
+    sft_checkpoint: projectRel(name, "checkpoints", "model.sft.pt"),
+    sft_best_checkpoint: projectRel(name, "checkpoints", "model.sft.best.pt"),
+    dpo_checkpoint: projectRel(name, "checkpoints", "model.dpo.pt"),
+    dpo_best_checkpoint: projectRel(name, "checkpoints", "model.dpo.best.pt"),
+    pretrain_log: projectRel(name, "logs", "pretrain_loss.jsonl"),
+    sft_log: projectRel(name, "logs", "sft_loss.jsonl"),
+    dpo_log: projectRel(name, "logs", "dpo_loss.jsonl"),
+  };
+}
+
+function isLegacyDefaultPath(value: any, defaults: string[]): boolean {
+  const v = String(value || "").replace(/\\/g, "/");
+  return !v || defaults.includes(v);
+}
+
+function applyProjectPaths(configInput: JsonObject, projectName?: string): JsonObject {
+  const name = safeProjectName(projectName || activeProjectName());
+  ensureProjectFolders(name);
+  const config = JSON.parse(JSON.stringify(configInput || {}));
+  const p = defaultProjectPaths(name);
+  const oldPaths = config.paths || {};
+  config.paths = { ...oldPaths };
+
+  config.paths.data_dir = "data";
+  config.paths.tokenizer_path = "data/tokenizer.json";
+  config.paths.pretokenized_cache_dir = p.pretokenized_cache_dir;
+  config.paths.sft_cache = p.sft_cache;
+  config.paths.dpo_cache = p.dpo_cache;
+  config.paths.pretrain_checkpoint = p.pretrain_checkpoint;
+  config.paths.pretrain_best_checkpoint = p.pretrain_best_checkpoint;
+  config.paths.sft_checkpoint = p.sft_checkpoint;
+  config.paths.sft_best_checkpoint = p.sft_best_checkpoint;
+  config.paths.dpo_checkpoint = p.dpo_checkpoint;
+  config.paths.dpo_best_checkpoint = p.dpo_best_checkpoint;
+  config.paths.pretrain_log = p.pretrain_log;
+  config.paths.sft_log = p.sft_log;
+  config.paths.dpo_log = p.dpo_log;
+
+  if (isLegacyDefaultPath(oldPaths.corpus_dir, ["corpus", "data/corpus"])) config.paths.corpus_dir = p.corpus_dir;
+  else config.paths.corpus_dir = oldPaths.corpus_dir;
+
+  if (isLegacyDefaultPath(oldPaths.sft_dataset, ["sft", "data/sft"])) config.paths.sft_dataset = p.sft_dataset;
+  else config.paths.sft_dataset = oldPaths.sft_dataset;
+
+  if (isLegacyDefaultPath(oldPaths.dpo_dataset, ["dpo", "data/dpo"])) config.paths.dpo_dataset = p.dpo_dataset;
+  else config.paths.dpo_dataset = oldPaths.dpo_dataset;
+
+  config.sft = { ...(config.sft || {}) };
+  if (isLegacyDefaultPath(config.sft.base_checkpoint, ["data/model.best.pt", "model.best.pt"])) {
+    config.sft.base_checkpoint = p.pretrain_best_checkpoint;
+  }
+
+  config.dpo = { ...(config.dpo || {}) };
+  if (isLegacyDefaultPath(config.dpo.policy_checkpoint, ["data/model.sft.best.pt", "model.sft.best.pt"])) {
+    config.dpo.policy_checkpoint = p.sft_best_checkpoint;
+  }
+  if (isLegacyDefaultPath(config.dpo.reference_checkpoint, ["data/model.sft.reference.pt", "model.sft.reference.pt"])) {
+    config.dpo.reference_checkpoint = projectRel(name, "checkpoints", "model.sft.reference.pt");
+  }
+
+  config.project = {
+    ...(config.project || {}),
+    name,
+    root: projectRel(name),
+    tokenizer_path: projectRel(name, "tokenizer.json"),
+    config_path: projectRel(name, "config", "gpt_config.json"),
+  };
+  return config;
+}
+
+function loadProjectConfig(projectName?: string): JsonObject {
+  const name = safeProjectName(projectName || activeProjectName());
+  const cfgPath = projectConfigPath(name);
+  if (fs.existsSync(cfgPath)) return readJson(cfgPath, loadConfig());
+  return loadConfig();
+}
+
+function saveProjectConfig(projectName: string | undefined, config: JsonObject) {
+  const name = safeProjectName(projectName || activeProjectName());
+  const scoped = applyProjectPaths(config, name);
+  writeJsonAtomic(projectConfigPath(name), scoped);
+  writeJsonAtomic(CONFIG_PATH, scoped);
+}
+
+function copyIfExists(src: string, dest: string, label: string, overwrite = true): boolean {
+  try {
+    if (!fs.existsSync(src)) return false;
+    if (!overwrite && fs.existsSync(dest)) return false;
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(src, dest);
+    pushLog(`[project] ${label}: ${relToRepo(src)} -> ${relToRepo(dest)}`);
+    return true;
+  } catch (err: any) {
+    pushLog(`[project] Failed to copy ${label}: ${err.message}`);
+    return false;
+  }
+}
+
+function seedProjectFromRuntime(projectName?: string, overwrite = false) {
+  const name = safeProjectName(projectName || activeProjectName());
+  ensureProjectFolders(name);
+  copyIfExists(DATA_TOKENIZER_PATH, projectAbs(name, "tokenizer.json"), "tokenizer", overwrite);
+  const checkpointMap: Array<[string, string]> = [
+    ["data/model.pt", "model.pt"],
+    ["data/model.best.pt", "model.best.pt"],
+    ["data/model.sft.pt", "model.sft.pt"],
+    ["data/model.sft.best.pt", "model.sft.best.pt"],
+    ["data/model.sft.reference.pt", "model.sft.reference.pt"],
+    ["data/model.dpo.pt", "model.dpo.pt"],
+    ["data/model.dpo.best.pt", "model.dpo.best.pt"],
+  ];
+  for (const [srcRel, destName] of checkpointMap) copyIfExists(path.join(REPO_ROOT, srcRel), projectAbs(name, "checkpoints", destName), `checkpoint ${destName}`, overwrite);
+  const logMap: Array<[string, string]> = [
+    ["data/pretrain_loss.jsonl", "pretrain_loss.jsonl"],
+    ["data/sft_loss.jsonl", "sft_loss.jsonl"],
+    ["data/dpo_loss.jsonl", "dpo_loss.jsonl"],
+  ];
+  for (const [srcRel, destName] of logMap) copyIfExists(path.join(REPO_ROOT, srcRel), projectAbs(name, "logs", destName), `metrics ${destName}`, overwrite);
+}
+
+function ensureProjectLayout(projectName?: string): JsonObject {
+  const name = safeProjectName(projectName || activeProjectName());
+  ensureProjectFolders(name);
+  ensurePrebuiltTokenizerCopy();
+
+  const projectTok = projectAbs(name, "tokenizer.json");
+  if (!fs.existsSync(projectTok)) {
+    if (fs.existsSync(DATA_TOKENIZER_PATH)) copyIfExists(DATA_TOKENIZER_PATH, projectTok, "seed project tokenizer", false);
+    else if (fs.existsSync(PREBUILT_TOKENIZER_PATH)) copyIfExists(PREBUILT_TOKENIZER_PATH, projectTok, "seed project tokenizer", false);
+  }
+
+  const cfgPath = projectConfigPath(name);
+  if (!fs.existsSync(cfgPath)) {
+    const scoped = applyProjectPaths(loadConfig(), name);
+    writeJsonAtomic(cfgPath, scoped);
+  }
+
+  return {
+    name,
+    root: projectRel(name),
+    config_path: projectRel(name, "config", "gpt_config.json"),
+    tokenizer_path: projectRel(name, "tokenizer.json"),
+    checkpoints_dir: projectRel(name, "checkpoints"),
+    logs_dir: projectRel(name, "logs"),
+    cache_dir: projectRel(name, "cache"),
+    corpus_dir: projectRel(name, "datasets", "corpus"),
+    sft_dir: projectRel(name, "datasets", "sft"),
+    dpo_dir: projectRel(name, "datasets", "dpo"),
+  };
+}
+
+function syncProjectToData(projectName?: string): JsonObject {
+  const name = safeProjectName(projectName || activeProjectName());
+  const layout = ensureProjectLayout(name);
+  const projectTok = projectAbs(name, "tokenizer.json");
+  if (fs.existsSync(projectTok)) {
+    fs.mkdirSync(path.dirname(DATA_TOKENIZER_PATH), { recursive: true });
+    fs.copyFileSync(projectTok, DATA_TOKENIZER_PATH);
+    pushLog(`[project] Loaded tokenizer into runtime data folder: ${relToRepo(projectTok)} -> ${relToRepo(DATA_TOKENIZER_PATH)}`);
+  }
+  const scoped = applyProjectPaths(loadProjectConfig(name), name);
+  writeJsonAtomic(CONFIG_PATH, scoped);
+  writeJsonAtomic(projectConfigPath(name), scoped);
+  return layout;
+}
+
+function saveRuntimeToProject(projectName?: string): JsonObject {
+  const name = safeProjectName(projectName || activeProjectName());
+  const layout = ensureProjectLayout(name);
+  seedProjectFromRuntime(name, true);
+  const scoped = applyProjectPaths(loadConfig(), name);
+  writeJsonAtomic(projectConfigPath(name), scoped);
+  pushLog(`[project] Runtime data artifacts saved back to ${projectRel(name)}`);
+  return layout;
+}
+
+function activateProject(projectName?: string, seedCurrent = false): JsonObject {
+  if (runningJob) throw new Error("Cannot switch projects while a trainer is running.");
+  const name = safeProjectName(projectName || DEFAULT_PROJECT_NAME);
+  if (seedCurrent) seedProjectFromRuntime(name, false);
+  const layout = syncProjectToData(name);
+  const ui = loadUiSettings();
+  ui.active_project = name;
+  ui.project_dir = projectAbs(name);
+  saveUiSettings(ui);
+  pushLog(`[project] Active project set to ${name}. Runtime data/tokenizer.json and config/gpt_config.json are synced from the project.`);
+  return layout;
+}
+
+function prepareProjectRuntime(projectName?: string): JsonObject {
+  const name = safeProjectName(projectName || activeProjectName());
+  syncProjectToData(name);
+  const config = applyProjectPaths(loadProjectConfig(name), name);
+  saveProjectConfig(name, config);
+  return config;
+}
+
 function ensurePrebuiltTokenizerCopy() {
   try {
     fs.mkdirSync(path.dirname(PREBUILT_TOKENIZER_PATH), { recursive: true });
@@ -228,9 +474,12 @@ function latestStepFromLog(logPathRaw: string | undefined, fallback: string): nu
 }
 
 function studioFeedbackPath(): string {
+  const active = activeProjectName();
+  ensureProjectLayout(active);
   const config = loadConfig();
-  const raw = String(deepGet(config, "paths.dpo_dataset", "dpo"));
-  const target = resolveRepoPath(raw, "dpo");
+  const defaultTarget = projectAbs(active, "datasets", "dpo");
+  const raw = String(deepGet(config, "paths.dpo_dataset", projectRel(active, "datasets", "dpo")) || projectRel(active, "datasets", "dpo"));
+  const target = isLegacyDefaultPath(raw, ["dpo", "data/dpo"]) ? defaultTarget : resolveRepoPath(raw, projectRel(active, "datasets", "dpo"));
   const looksLikeFile = Boolean(path.extname(target));
   if (looksLikeFile) {
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -242,22 +491,35 @@ function studioFeedbackPath(): string {
 
 function getSettingsPayload(): JsonObject {
   ensurePrebuiltTokenizerCopy();
-  const config = loadConfig();
   const ui = loadUiSettings();
+  const activeProject = safeProjectName(ui.active_project);
+  const layout = ensureProjectLayout(activeProject);
+  const config = runningJob ? loadConfig() : applyProjectPaths(loadProjectConfig(activeProject), activeProject);
+  if (!runningJob) {
+    writeJsonAtomic(CONFIG_PATH, config);
+    writeJsonAtomic(projectConfigPath(activeProject), config);
+  }
   const model = config.model || {};
   const paths = config.paths || {};
-  const activeProject = safeProjectName(ui.active_project);
-  const activeProjectDir = ensureProjectDir(activeProject);
   return {
     ...ui,
-    project_dir: activeProjectDir,
+    ...layout,
+    project_dir: projectAbs(activeProject),
+    project_layout: layout,
     projects: listProjects(),
     active_project: activeProject,
     h2_repo_root: REPO_ROOT,
     h2_config_path: CONFIG_PATH,
+    project_config_path: relToRepo(projectConfigPath(activeProject)),
     tokenizer_path: relToRepo(DATA_TOKENIZER_PATH),
     prebuilt_tokenizer_path: relToRepo(PREBUILT_TOKENIZER_PATH),
     project_tokenizer_path: relToRepo(projectTokenizerPath(activeProject)),
+    project_checkpoint_dir: projectRel(activeProject, "checkpoints"),
+    project_log_dir: projectRel(activeProject, "logs"),
+    project_cache_dir: projectRel(activeProject, "cache"),
+    project_corpus_dir: projectRel(activeProject, "datasets", "corpus"),
+    project_sft_dir: projectRel(activeProject, "datasets", "sft"),
+    project_dpo_dir: projectRel(activeProject, "datasets", "dpo"),
     device: deepGet(config, "runtime.device", "auto"),
     model_params: estimateParams(model, tokenizerVocabSize(paths.tokenizer_path)),
     model_layers: model.n_layer ?? 0,
@@ -268,17 +530,17 @@ function getSettingsPayload(): JsonObject {
     vocab_size: tokenizerVocabSize(paths.tokenizer_path),
     dpo_ready: fs.existsSync(path.join(REPO_ROOT, "dpo.py")),
     dpo_buffer: countPreferencePairs(),
-    dpo_global_step: latestStepFromLog(paths.dpo_log, "data/dpo_loss.jsonl"),
-    dpo_dataset: deepGet(config, "paths.dpo_dataset", "dpo"),
-    dpo_checkpoint: deepGet(config, "paths.dpo_checkpoint", "data/model.dpo.pt"),
+    dpo_global_step: latestStepFromLog(paths.dpo_log, projectRel(activeProject, "logs", "dpo_loss.jsonl")),
+    dpo_dataset: deepGet(config, "paths.dpo_dataset", projectRel(activeProject, "datasets", "dpo")),
+    dpo_checkpoint: deepGet(config, "paths.dpo_checkpoint", projectRel(activeProject, "checkpoints", "model.dpo.pt")),
     dpo_beta: deepGet(config, "dpo.beta", 0.1),
     dpo_lr: deepGet(config, "dpo.lr", 0.000003),
     dpo_epochs: deepGet(config, "dpo.epochs", 1),
     dpo_batch_size: deepGet(config, "dpo.batch_size", 1),
-    corpus_dir: deepGet(config, "paths.corpus_dir", "corpus"),
-    sft_dataset: deepGet(config, "paths.sft_dataset", "sft"),
-    pretrain_checkpoint: deepGet(config, "paths.pretrain_checkpoint", "data/model.pt"),
-    sft_checkpoint: deepGet(config, "paths.sft_checkpoint", "data/model.sft.pt"),
+    corpus_dir: deepGet(config, "paths.corpus_dir", projectRel(activeProject, "datasets", "corpus")),
+    sft_dataset: deepGet(config, "paths.sft_dataset", projectRel(activeProject, "datasets", "sft")),
+    pretrain_checkpoint: deepGet(config, "paths.pretrain_checkpoint", projectRel(activeProject, "checkpoints", "model.pt")),
+    sft_checkpoint: deepGet(config, "paths.sft_checkpoint", projectRel(activeProject, "checkpoints", "model.sft.pt")),
     is_training: Boolean(runningJob),
     current_task: runningJob?.name ?? null,
   };
@@ -314,7 +576,8 @@ function estimateParams(model: JsonObject, vocabSize: number): number {
 }
 
 function updateConfigFromTrainingRequest(kind: "pretrain" | "sft" | "dpo", body: JsonObject): JsonObject {
-  const config = loadConfig();
+  const active = activeProjectName();
+  let config = prepareProjectRuntime(active);
   if (kind === "pretrain") {
     if (body.corpus_dir) deepSet(config, "paths.corpus_dir", body.corpus_dir);
     if (body.epochs !== undefined) deepSet(config, "train.epochs", Number(body.epochs));
@@ -342,16 +605,24 @@ function updateConfigFromTrainingRequest(kind: "pretrain" | "sft" | "dpo", body:
     if (body.batch_size !== undefined) deepSet(config, "dpo.batch_size", Number(body.batch_size));
     if (body.grad_accum !== undefined) deepSet(config, "dpo.grad_accum", Number(body.grad_accum));
   }
-  saveConfig(config);
+  config = applyProjectPaths(config, active);
+  saveProjectConfig(active, config);
+  pushLog(`[project] ${kind} outputs will save under ${projectRel(active, "checkpoints")} and ${projectRel(active, "logs")}`);
   return config;
 }
 
 function updateConfigFromSettings(body: JsonObject) {
-  const config = loadConfig();
+  if (body.active_project !== undefined && safeProjectName(body.active_project) !== activeProjectName()) {
+    activateProject(body.active_project, false);
+  }
+  const active = safeProjectName(body.active_project || activeProjectName());
+  let config = prepareProjectRuntime(active);
   const ui = loadUiSettings();
 
   const uiKeys = ["theme", "show_tooltips", "active_project"];
   for (const key of uiKeys) if (key in body) ui[key] = body[key];
+  ui.active_project = active;
+  ui.project_dir = projectAbs(active);
 
   if (body.model_layers !== undefined) deepSet(config, "model.n_layer", Number(body.model_layers));
   if (body.model_dim !== undefined) deepSet(config, "model.n_embd", Number(body.model_dim));
@@ -361,7 +632,7 @@ function updateConfigFromSettings(body: JsonObject) {
   if (body.device !== undefined) deepSet(config, "runtime.device", String(body.device));
 
   saveUiSettings(ui);
-  saveConfig(config);
+  saveProjectConfig(active, config);
 }
 
 function spawnJob(name: string, args: string[], extraEnv: JsonObject = {}) {
@@ -472,6 +743,9 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: "20mb" }));
 
+  ensureProjectLayout(activeProjectName());
+  if (!runningJob) syncProjectToData(activeProjectName());
+
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true, repo_root: REPO_ROOT, running: Boolean(runningJob), task: runningJob?.name ?? null });
   });
@@ -480,6 +754,53 @@ async function startServer() {
   app.post("/api/settings", (req, res) => {
     updateConfigFromSettings(req.body || {});
     res.json({ status: "ok", settings: getSettingsPayload() });
+  });
+
+
+  app.get("/api/projects", (_req, res) => {
+    res.json({ projects: listProjects(), active_project: activeProjectName(), settings: getSettingsPayload() });
+  });
+
+  app.post("/api/projects/create", (req, res) => {
+    try {
+      const name = safeProjectName(req.body?.name);
+      if (!name) return res.status(400).json({ error: "Project name is required." });
+      ensureProjectLayout(name);
+      if (req.body?.seed_current !== false) seedProjectFromRuntime(name, false);
+      const config = applyProjectPaths(loadProjectConfig(name), name);
+      writeJsonAtomic(projectConfigPath(name), config);
+      pushLog(`[project] Created project: ${name}`);
+      res.json({ status: "Project created", project: name, projects: listProjects(), layout: ensureProjectLayout(name) });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/projects/load", (req, res) => {
+    try {
+      const layout = activateProject(req.body?.name, false);
+      res.json({ status: "Project loaded", project: safeProjectName(req.body?.name), layout, settings: getSettingsPayload() });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/projects/sync-to-data", (_req, res) => {
+    try {
+      const layout = syncProjectToData(activeProjectName());
+      res.json({ status: "Project loaded into runtime data folder", layout, settings: getSettingsPayload() });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/projects/save-runtime", (_req, res) => {
+    try {
+      const layout = saveRuntimeToProject(activeProjectName());
+      res.json({ status: "Runtime tokenizer/config saved back to project", layout, settings: getSettingsPayload() });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
   });
 
   app.get("/api/logs", (req, res) => {
@@ -534,10 +855,11 @@ async function startServer() {
 
       const outPath = "data/tokenizer.json";
       const activeProject = activeProjectName();
+      ensureProjectLayout(activeProject);
       const projectCopy = relToRepo(projectTokenizerPath(activeProject));
-      const config = loadConfig();
+      const config = applyProjectPaths(loadProjectConfig(activeProject), activeProject);
       deepSet(config, "paths.tokenizer_path", outPath);
-      saveConfig(config);
+      saveProjectConfig(activeProject, config);
 
       const args = [
         path.join("tools", "train_tokenizer.py"),
@@ -620,6 +942,7 @@ async function startServer() {
   app.post("/api/chat", (req, res) => {
     try {
       const body = req.body || {};
+      prepareProjectRuntime(activeProjectName());
       const payload = JSON.stringify(body);
       const child = spawn(pythonCmd(), [path.join("tools", "chat_once.py"), "--config", relToRepo(CONFIG_PATH), "--json"], {
         cwd: REPO_ROOT,
@@ -660,8 +983,9 @@ async function startServer() {
     try {
       const url = `https://huggingface.co/datasets/${datasetId}/resolve/main/${filename}`;
       const response = await axios({ method: "get", url, responseType: "stream" });
-      const config = loadConfig();
-      const corpusDir = resolveRepoPath(deepGet(config, "paths.corpus_dir", "corpus"), "corpus");
+      const active = activeProjectName();
+      const config = prepareProjectRuntime(active);
+      const corpusDir = resolveRepoPath(deepGet(config, "paths.corpus_dir", projectRel(active, "datasets", "corpus")), projectRel(active, "datasets", "corpus"));
       fs.mkdirSync(corpusDir, { recursive: true });
       const destPath = path.join(corpusDir, path.basename(filename));
       const writer = fs.createWriteStream(destPath);
@@ -682,12 +1006,23 @@ async function startServer() {
       } catch (e: any) {
         if (!String(e.message || "").includes("already exists")) throw e;
       }
-      const dataDir = resolveRepoPath(deepGet(loadConfig(), "paths.data_dir", "data"), "data");
-      const files = fs.readdirSync(dataDir).filter(f => /\.(pt|json|bin)$/.test(f));
-      if (!files.length) return res.status(404).json({ error: "No model artifacts found in data/." });
-      const operations = files.map(filename => ({
-        path: filename,
-        content: new Blob([fs.readFileSync(path.join(dataDir, filename))]),
+      const active = activeProjectName();
+      const projectDir = projectAbs(active);
+      const exportFiles: Array<{ source: string; dest: string }> = [];
+      const checkpointDir = path.join(projectDir, "checkpoints");
+      if (fs.existsSync(checkpointDir)) {
+        for (const filename of fs.readdirSync(checkpointDir).filter(f => /\.(pt|bin)$/.test(f))) {
+          exportFiles.push({ source: path.join(checkpointDir, filename), dest: `checkpoints/${filename}` });
+        }
+      }
+      const tok = projectAbs(active, "tokenizer.json");
+      if (fs.existsSync(tok)) exportFiles.push({ source: tok, dest: "tokenizer.json" });
+      const cfg = projectConfigPath(active);
+      if (fs.existsSync(cfg)) exportFiles.push({ source: cfg, dest: "config/gpt_config.json" });
+      if (!exportFiles.length) return res.status(404).json({ error: `No project artifacts found for ${active}.` });
+      const operations = exportFiles.map(file => ({
+        path: file.dest,
+        content: new Blob([fs.readFileSync(file.source)]),
         operation: "addOrUpdate" as const,
       }));
       await commit({ repo: repoName, credentials: { accessToken: hfToken }, title: "Exported from Haiku Studio", operations });
