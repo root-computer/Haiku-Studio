@@ -100,6 +100,17 @@ interface AppSettings {
   project_tokenizer_path?: string;
   is_training?: boolean;
   current_task?: string | null;
+  project_config_path?: string;
+  project_checkpoint_dir?: string;
+  project_log_dir?: string;
+  project_cache_dir?: string;
+  project_corpus_dir?: string;
+  project_sft_dir?: string;
+  project_dpo_dir?: string;
+  corpus_dir?: string;
+  sft_dataset?: string;
+  pretrain_checkpoint?: string;
+  sft_checkpoint?: string;
 }
 
 // --- Context ---
@@ -182,8 +193,8 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [hardwareInfo, setHardwareInfo] = useState<any>(null);
   const [autoConfigPending, setAutoConfigPending] = useState(false);
-  const [projects, setProjects] = useState<string[]>(['default_project', 'research_v1']);
-  const [activeProject, setActiveProject] = useState('default_project');
+  const [projects, setProjects] = useState<string[]>(['haiku_studio']);
+  const [activeProject, setActiveProject] = useState('haiku_studio');
 
   // Pretraining Form State
   const [corpusDir, setCorpusDir] = useState('corpus');
@@ -271,14 +282,14 @@ export default function App() {
       if (res.data.show_tooltips !== undefined) setShowTooltips(res.data.show_tooltips);
       if (res.data.projects) setProjects(res.data.projects);
       if (res.data.active_project) setActiveProject(res.data.active_project);
+      if (res.data.corpus_dir) setCorpusDir(res.data.corpus_dir);
+      if (res.data.sft_dataset) setSftDataPath(res.data.sft_dataset);
       if (res.data.dpo_dataset) setDpoDataPath(res.data.dpo_dataset);
       if (res.data.dpo_beta !== undefined) setDpoBeta(Number(res.data.dpo_beta));
       if (res.data.dpo_lr !== undefined) setDpoLR(Number(res.data.dpo_lr));
       if (res.data.dpo_epochs !== undefined) setDpoEpochs(Number(res.data.dpo_epochs));
       if (res.data.dpo_batch_size !== undefined) setDpoBatchSize(Number(res.data.dpo_batch_size));
       if (res.data.is_training !== undefined) setIsTraining(Boolean(res.data.is_training));
-      if (res.data.corpus_dir && !tokPath) setTokPath('');
-
     } catch (e) {}
   };
 
@@ -326,6 +337,62 @@ export default function App() {
       logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight;
     }
   }, [logs]);
+
+  const createProject = async () => {
+    if (isTraining) return;
+    const raw = window.prompt('New project name:', 'haiku_experiment');
+    const name = (raw || '').trim();
+    if (!name) return;
+    try {
+      const res = await axios.post('/api/projects/create', { name, seed_current: true });
+      setProjects(res.data.projects || []);
+      setLogs(prev => [...prev, `[project] ${res.data.status}: ${res.data.project}`].slice(-1000));
+      await loadProject(name);
+    } catch (e: any) {
+      alert(e?.response?.data?.error || 'Failed to create project.');
+    }
+  };
+
+  const loadProject = async (name: string) => {
+    if (!name || isTraining) return;
+    try {
+      setIsTerminalOpen(true);
+      const res = await axios.post('/api/projects/load', { name });
+      const next = res.data.settings || {};
+      if (next.projects) setProjects(next.projects);
+      if (next.active_project) setActiveProject(next.active_project);
+      setSettings(next);
+      if (next.corpus_dir) setCorpusDir(next.corpus_dir);
+      if (next.sft_dataset) setSftDataPath(next.sft_dataset);
+      if (next.dpo_dataset) setDpoDataPath(next.dpo_dataset);
+      setLogs(prev => [...prev, `[project] Loaded ${name}. Project tokenizer/config are now staged into data/.`].slice(-1000));
+      fetchSettings();
+    } catch (e: any) {
+      alert(e?.response?.data?.error || 'Failed to load project.');
+    }
+  };
+
+  const syncProjectToData = async () => {
+    try {
+      setIsTerminalOpen(true);
+      const res = await axios.post('/api/projects/sync-to-data');
+      setLogs(prev => [...prev, `[project] ${res.data.status}`].slice(-1000));
+      fetchSettings();
+    } catch (e: any) {
+      alert(e?.response?.data?.error || 'Failed to sync project into data/.');
+    }
+  };
+
+  const saveRuntimeToProject = async () => {
+    try {
+      setIsTerminalOpen(true);
+      const res = await axios.post('/api/projects/save-runtime');
+      setLogs(prev => [...prev, `[project] ${res.data.status}`].slice(-1000));
+      fetchSettings();
+    } catch (e: any) {
+      alert(e?.response?.data?.error || 'Failed to save runtime files to project.');
+    }
+  };
 
   const startPretraining = async () => {
     if (isTraining) return;
@@ -604,13 +671,28 @@ export default function App() {
             </div>
             <div className="h-6 w-px bg-zinc-200 dark:bg-zinc-800" />
             <div className="flex items-center gap-2">
-               <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Active Weights:</span>
-               <span className={cn(
-                 "px-3 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider",
-                 theme === 'dark' ? "bg-zinc-800 text-zinc-400" : "bg-zinc-100 text-zinc-600"
-               )}>
-                 {activeProject}
-               </span>
+               <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Active Project:</span>
+               <select
+                 value={activeProject}
+                 disabled={isTraining}
+                 onChange={(e) => loadProject(e.target.value)}
+                 className={cn(
+                   "px-3 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider outline-none border",
+                   theme === 'dark' ? "bg-zinc-800 text-zinc-200 border-zinc-700" : "bg-zinc-100 text-zinc-700 border-zinc-200"
+                 )}
+               >
+                 {projects.map(project => <option key={project} value={project}>{project}</option>)}
+               </select>
+               <button
+                 onClick={createProject}
+                 disabled={isTraining}
+                 className={cn(
+                   "px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border disabled:opacity-40",
+                   theme === 'dark' ? "bg-zinc-900 text-zinc-300 border-zinc-700 hover:bg-zinc-800" : "bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50"
+                 )}
+               >
+                 New
+               </button>
             </div>
           </div>
           <div className="flex items-center gap-6">
@@ -643,7 +725,7 @@ export default function App() {
                        <button 
                         onClick={() => {
                           setDeployMenuOpen(false);
-                          setLogs(prev => [...prev, `[SYSTEM] h2 trainers save checkpoints automatically to the configured data/ paths.`, `[SYSTEM] Use Hugging Face Push to export saved artifacts.`]);
+                          setLogs(prev => [...prev, `[SYSTEM] h2 trainers save checkpoints and metrics into the active project folder.`, `[SYSTEM] Use Hugging Face Push to export saved artifacts.`]);
                         }}
                         className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left text-[10px] font-bold uppercase tracking-wider text-zinc-500 hover:text-black dark:hover:text-white hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-all group"
                        >
@@ -688,6 +770,31 @@ export default function App() {
                     The professional environment for neural weight synthesis and behavioral alignment. Start by choosing a training protocol or continue your research in the evaluation labs.
                   </p>
                 </section>
+
+                <Card title="Project Workspace" subtitle="Project files are persistent; data/ is runtime staging">
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                    <div className={cn("rounded-xl border p-4", theme === 'dark' ? "bg-zinc-950 border-zinc-800" : "bg-zinc-50 border-zinc-100")}>
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-zinc-500 mb-1">Active Project</p>
+                      <p className={cn("text-sm font-mono font-bold truncate", theme === 'dark' ? "text-zinc-200" : "text-zinc-900")}>{activeProject}</p>
+                      <p className="text-[10px] text-zinc-500 mt-2 truncate">{settings?.project_dir}</p>
+                    </div>
+                    <div className={cn("rounded-xl border p-4", theme === 'dark' ? "bg-zinc-950 border-zinc-800" : "bg-zinc-50 border-zinc-100")}>
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-zinc-500 mb-1">Checkpoint Target</p>
+                      <p className="text-[10px] font-mono text-zinc-500 truncate">{settings?.project_checkpoint_dir || 'projects/haiku_studio/checkpoints'}</p>
+                      <p className="text-[9px] text-zinc-600 mt-2">Pretrain, SFT, DPO weights save here.</p>
+                    </div>
+                    <div className={cn("rounded-xl border p-4", theme === 'dark' ? "bg-zinc-950 border-zinc-800" : "bg-zinc-50 border-zinc-100")}>
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-zinc-500 mb-1">Metrics Target</p>
+                      <p className="text-[10px] font-mono text-zinc-500 truncate">{settings?.project_log_dir || 'projects/haiku_studio/logs'}</p>
+                      <p className="text-[9px] text-zinc-600 mt-2">Loss JSONL files save here.</p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-3 pt-4">
+                    <button onClick={syncProjectToData} disabled={isTraining} className={cn("px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider border disabled:opacity-40", theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-200 hover:bg-zinc-800" : "bg-white border-zinc-200 text-zinc-900 hover:bg-zinc-50")}>Load Project Into Data</button>
+                    <button onClick={saveRuntimeToProject} disabled={isTraining} className={cn("px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider border disabled:opacity-40", theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-200 hover:bg-zinc-800" : "bg-white border-zinc-200 text-zinc-900 hover:bg-zinc-50")}>Save Runtime To Project</button>
+                    <button onClick={createProject} disabled={isTraining} className={cn("px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider border disabled:opacity-40", theme === 'dark' ? "bg-white border-white text-black hover:bg-zinc-200" : "bg-zinc-900 border-zinc-900 text-white hover:bg-black")}>Create Project</button>
+                  </div>
+                </Card>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
                   <div className="space-y-8">
@@ -1300,7 +1407,7 @@ export default function App() {
                     <div className="space-y-8">
                        <Card title="Tokenizer Insights">
                           <p className="text-[10px] text-zinc-500 leading-relaxed font-medium">
-                            Tokenizer training now streams source progress into the System Kernel Output panel. The RAM guard samples large corpora instead of loading everything blindly, then saves both the active data tokenizer and a project-local tokenizer copy.
+                            Tokenizer training now streams source progress into the System Kernel Output panel. The RAM guard samples large corpora instead of loading everything blindly, then saves both the runtime data tokenizer and the active project tokenizer copy.
                           </p>
                        </Card>
                     </div>
@@ -1339,7 +1446,7 @@ export default function App() {
                              <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-full p-3 bg-zinc-900 text-white text-[10px] rounded-xl shadow-2xl border border-zinc-800">
                                 <strong>SFT Dataset:</strong> Provide a <code>.jsonl</code> file containing multi-turn dialogues formatted with <code>user:</code> and <code>bot:</code> segments.
                              </div>
-                             <input type="text" placeholder="/datasets/conversations_v2.jsonl" className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-sm font-mono text-zinc-600 outline-none" />
+                             <input type="text" value={sftDataPath} onChange={(e) => setSftDataPath(e.target.value)} placeholder={settings?.project_sft_dir || "projects/haiku_studio/datasets/sft"} className={cn("w-full border rounded-xl px-4 py-3 text-sm font-mono outline-none", theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-300" : "bg-zinc-50 border-zinc-200 text-zinc-600")} />
                           </div>
 
                           <div className="grid grid-cols-3 gap-6">
@@ -1348,21 +1455,21 @@ export default function App() {
                                 <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-48 p-3 bg-zinc-900 text-white text-[10px] rounded-xl shadow-2xl border border-zinc-800">
                                    <strong>Epochs:</strong> Number of times the optimizer passes through the entire SFT dataset. Usually 1-3 is sufficient.
                                 </div>
-                                <input type="number" defaultValue={3} className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-sm font-mono" />
+                                <input type="number" value={sftEpochs} onChange={(e) => setSftEpochs(Number(e.target.value))} className={cn("w-full border rounded-xl px-4 py-3 text-sm font-mono", theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-300" : "bg-zinc-50 border-zinc-200 text-zinc-900")} />
                              </div>
                              <div className="space-y-2 group relative">
                                 <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Batch Size</label>
                                 <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-48 p-3 bg-zinc-900 text-white text-[10px] rounded-xl shadow-2xl border border-zinc-800">
                                    <strong>Batch Size:</strong> Number of conversation pairs processed simultaneously during one update step.
                                 </div>
-                                <input type="number" defaultValue={4} className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-sm font-mono" />
+                                <input type="number" value={sftBatchSize} onChange={(e) => setSftBatchSize(Number(e.target.value))} className={cn("w-full border rounded-xl px-4 py-3 text-sm font-mono", theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-300" : "bg-zinc-50 border-zinc-200 text-zinc-900")} />
                              </div>
                              <div className="space-y-2 group relative">
                                 <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Learning Rate</label>
                                 <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-48 p-3 bg-zinc-900 text-white text-[10px] rounded-xl shadow-2xl border border-zinc-800">
                                    <strong>Fine-Tuning LR:</strong> Often much lower than pretraining LR (e.g., 5e-5) to prevent catastrophic forgetting of base knowledge.
                                 </div>
-                                <input type="number" defaultValue={0.00005} className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-sm font-mono" />
+                                <input type="number" step="0.000001" value={sftLR} onChange={(e) => setSftLR(Number(e.target.value))} className={cn("w-full border rounded-xl px-4 py-3 text-sm font-mono", theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-300" : "bg-zinc-50 border-zinc-200 text-zinc-900")} />
                              </div>
                           </div>
 
@@ -1426,7 +1533,7 @@ export default function App() {
                                   <div className="space-y-3 text-left col-span-2">
                                      <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider ml-1">Preference Dataset Path</label>
                                      <input value={dpoDataPath} onChange={(e) => setDpoDataPath(e.target.value)} className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-sm font-mono focus:border-zinc-900 focus:bg-white transition-all outline-none" />
-                                     <p className="text-[9px] text-zinc-400 font-medium px-1">Folder or file containing JSONL/text prompt/chosen/rejected pairs. Chat Lab feedback writes to dpo/studio_feedback.jsonl by default.</p>
+                                     <p className="text-[9px] text-zinc-400 font-medium px-1">Folder or file containing JSONL/text prompt/chosen/rejected pairs. Chat Lab feedback writes into the active project's DPO dataset folder by default.</p>
                                   </div>
                                   <div className="space-y-3 text-left">
                                      <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider ml-1">Beta</label>
@@ -1451,7 +1558,7 @@ export default function App() {
                                   <Zap className="w-4 h-4" /> Start DPO Training
                                </button>
                                <p className="text-[10px] text-zinc-500 leading-relaxed">
-                                  If no reference checkpoint exists, dpo.py creates one from the configured SFT policy checkpoint and freezes it. Output saves to {settings?.dpo_checkpoint || 'data/model.dpo.pt'}.
+                                  If no reference checkpoint exists, dpo.py creates one from the configured SFT policy checkpoint and freezes it. Output saves to {settings?.dpo_checkpoint || 'projects/haiku_studio/checkpoints/model.dpo.pt'}.
                                </p>
                             </div>
                           )}
