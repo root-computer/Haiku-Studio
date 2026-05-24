@@ -608,10 +608,12 @@ export default function App() {
         "bg-[var(--card)] border-[var(--border)]"
       )}>
         <div className="flex items-center gap-3 px-1">
-          <div className={cn(
-            "w-8 h-8 rounded-lg flex items-center justify-center font-bold",
-            theme === 'dark' ? "bg-white text-black" : "bg-black text-white shadow-md shadow-zinc-200/50"
-          )}>H</div>
+          <img
+            src="/haiku-logo.png"
+            alt="Haiku Studio"
+            className="w-9 h-9 shrink-0 select-none"
+            draggable={false}
+          />
           <div className="flex flex-col">
             <span className={cn("font-bold text-base tracking-tight leading-none", theme === 'dark' ? "text-white" : "text-zinc-900")}>Haiku Studio</span>
             <span className="text-[10px] font-semibold text-zinc-400 capitalize tracking-wider mt-1 opacity-70">h2 engine · optional UI</span>
