@@ -307,23 +307,6 @@ cd studio
 npm run lint
 ```
 
-## Version-control guidance
-
-Commit source files, configs, project skeletons, and small static assets.
-
-Do not commit generated or machine-specific files:
-
-```text
-studio/node_modules/
-studio/dist/
-studio/logs/
-projects/*/checkpoints/*.pt
-projects/*/logs/*.jsonl
-projects/*/cache/*
-__pycache__/
-*.pyc
-```
-
 ## Scope
 
 This repository is designed for local experimentation and training of small to mid-sized GPT-style models on consumer or workstation hardware. It does not include distributed training, tensor parallelism, FSDP, ZeRO sharding, or a managed cloud training backend.
