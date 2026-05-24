@@ -23,7 +23,6 @@
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "lucide-react": "^0.546.0",
-    "motion": "^12.38.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "recharts": "^3.8.1",
@@ -42,5 +41,7 @@
     "typescript": "~5.8.2",
     "vite": "^6.2.3"
   },
-  "main": "electron.cjs"
+  "main": "electron.cjs",
+  "productName": "Haiku Studio",
+  "description": "Optional desktop workspace for local h2 model training, tokenization, fine-tuning, alignment, and checkpoint testing."
 }
