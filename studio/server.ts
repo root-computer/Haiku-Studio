@@ -460,6 +460,111 @@ function countPreferencePairs(): number {
   return count;
 }
 
+function listDataFiles(target: string): string[] {
+  if (!fs.existsSync(target)) return [];
+  const stat = fs.statSync(target);
+  if (stat.isFile()) return [target];
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === ".gitkeep" || entry.name.startsWith(".")) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile()) out.push(full);
+    }
+  };
+  walk(target);
+  return out.sort();
+}
+
+function countPreferencePairsInFile(file: string): number {
+  if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return 0;
+  const text = fs.readFileSync(file, "utf8");
+  let count = 0;
+  if (file.toLowerCase().endsWith(".jsonl")) {
+    for (const line of text.split(/\r?\n/)) {
+      const clean = line.trim();
+      if (!clean) continue;
+      try { if (normalizePreferenceObject(JSON.parse(clean))) count += 1; } catch {}
+    }
+  } else {
+    for (const block of text.split(/\n\s*\n/g)) {
+      const low = block.toLowerCase();
+      if ((low.includes("user:") || low.includes("prompt:")) && low.includes("chosen:") && low.includes("rejected:")) count += 1;
+    }
+  }
+  return count;
+}
+
+function latestJsonlRecord(file: string): JsonObject | null {
+  if (!fs.existsSync(file)) return null;
+  const lines = fs.readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean).slice(-250).reverse();
+  for (const line of lines) {
+    try {
+      const row = JSON.parse(line);
+      if (row && typeof row === "object") return row;
+    } catch {}
+  }
+  return null;
+}
+
+function fileSummary(file: string): JsonObject {
+  const stat = fs.statSync(file);
+  return {
+    path: relToRepo(file),
+    size_bytes: stat.size,
+    modified_at: stat.mtime.toISOString(),
+    preference_pairs: countPreferencePairsInFile(file),
+  };
+}
+
+function checkpointSummary(pathRaw: string | undefined, fallback: string): JsonObject {
+  const abs = resolveRepoPath(pathRaw, fallback);
+  if (!fs.existsSync(abs)) return { path: relToRepo(abs), exists: false, size_bytes: 0, modified_at: null };
+  const stat = fs.statSync(abs);
+  return { path: relToRepo(abs), exists: true, size_bytes: stat.size, modified_at: stat.mtime.toISOString() };
+}
+
+function dpoStatsPayload(): JsonObject {
+  const active = activeProjectName();
+  ensureProjectLayout(active);
+  const config = loadConfig();
+  const datasetRaw = String(deepGet(config, "paths.dpo_dataset", projectRel(active, "datasets", "dpo")) || projectRel(active, "datasets", "dpo"));
+  const datasetAbs = resolveRepoPath(datasetRaw, projectRel(active, "datasets", "dpo"));
+  const files = listDataFiles(datasetAbs);
+  const fileRows = files.map(fileSummary);
+  const feedbackFile = studioFeedbackPath();
+  const logRaw = String(deepGet(config, "paths.dpo_log", projectRel(active, "logs", "dpo_loss.jsonl")) || projectRel(active, "logs", "dpo_loss.jsonl"));
+  const logAbs = resolveRepoPath(logRaw, projectRel(active, "logs", "dpo_loss.jsonl"));
+  const lastMetrics = latestJsonlRecord(logAbs);
+
+  return {
+    active_project: active,
+    ready: fs.existsSync(path.join(REPO_ROOT, "dpo.py")),
+    dataset_path: relToRepo(datasetAbs),
+    dataset_exists: fs.existsSync(datasetAbs),
+    file_count: fileRows.length,
+    preference_pairs: fileRows.reduce((total, row) => total + Number(row.preference_pairs || 0), 0),
+    feedback_file: relToRepo(feedbackFile),
+    feedback_pairs: countPreferencePairsInFile(feedbackFile),
+    files: fileRows.slice(0, 25),
+    latest_step: latestStepFromLog(logRaw, projectRel(active, "logs", "dpo_loss.jsonl")),
+    latest_metrics: lastMetrics,
+    log_path: relToRepo(logAbs),
+    checkpoints: {
+      policy: checkpointSummary(deepGet(config, "dpo.policy_checkpoint", projectRel(active, "checkpoints", "model.sft.best.pt")), projectRel(active, "checkpoints", "model.sft.best.pt")),
+      reference: checkpointSummary(deepGet(config, "dpo.reference_checkpoint", projectRel(active, "checkpoints", "model.sft.reference.pt")), projectRel(active, "checkpoints", "model.sft.reference.pt")),
+      output: checkpointSummary(deepGet(config, "paths.dpo_checkpoint", projectRel(active, "checkpoints", "model.dpo.pt")), projectRel(active, "checkpoints", "model.dpo.pt")),
+      best: checkpointSummary(deepGet(config, "paths.dpo_best_checkpoint", projectRel(active, "checkpoints", "model.dpo.best.pt")), projectRel(active, "checkpoints", "model.dpo.best.pt")),
+    },
+    beta: deepGet(config, "dpo.beta", 0.1),
+    lr: deepGet(config, "dpo.lr", 0.000003),
+    epochs: deepGet(config, "dpo.epochs", 1),
+    batch_size: deepGet(config, "dpo.batch_size", 1),
+  };
+}
+
+
 function latestStepFromLog(logPathRaw: string | undefined, fallback: string): number {
   const logPath = resolveRepoPath(logPathRaw, fallback);
   if (!fs.existsSync(logPath)) return 0;
@@ -810,6 +915,13 @@ async function startServer() {
   });
 
   app.get("/api/metrics", (_req, res) => res.json(latestMetrics()));
+  app.get("/api/dpo/stats", (_req, res) => {
+    try {
+      res.json(dpoStatsPayload());
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
   app.get("/api/hardware/detect", async (_req, res) => res.json(await detectHardware()));
 
   app.post("/api/train/pretrain", (req, res) => {
