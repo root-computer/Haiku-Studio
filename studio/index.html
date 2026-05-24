@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Haiku Studio</title>
+
+    <script>
+      window.addEventListener('error', function (event) {
+        console.error('[Haiku Studio page error]', event.message, event.filename, event.lineno);
+      });
+      window.addEventListener('unhandledrejection', function (event) {
+        console.error('[Haiku Studio unhandled rejection]', event.reason);
+      });
+      setTimeout(function () {
+        var root = document.getElementById('root');
+        if (root && root.children.length === 0) {
+          root.innerHTML = '<div style="min-height:100vh;background:#09090b;color:#e4e4e7;font-family:Segoe UI,Arial,sans-serif;display:flex;align-items:center;justify-content:center;padding:32px"><div style="max-width:760px;background:#111114;border:1px solid #27272a;border-radius:18px;padding:28px"><h1 style="margin:0 0 12px;font-size:24px">Haiku Studio frontend did not mount</h1><p style="color:#a1a1aa;line-height:1.55">The backend is reachable, but React did not render into #root. Check <code>studio\logs\renderer.log</code> and <code>studio\logs\backend.log</code>.</p></div></div>';
+        }
+      }, 5000);
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

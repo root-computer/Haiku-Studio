@@ -1,0 +1,6 @@
+{
+  "name": "Haiku Studio",
+  "description": "A professional LLM creation studio for training and aligning custom language models from scratch.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

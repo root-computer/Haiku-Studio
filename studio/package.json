@@ -1,0 +1,46 @@
+{
+  "name": "haiku-h2-studio",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "studio": "electron .",
+    "dev": "tsx server.ts",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "server": "tsx server.ts",
+    "studio:dev": "node -e \"process.exit(0)\" && electron ."
+  },
+  "dependencies": {
+    "@google/genai": "^1.29.0",
+    "@huggingface/hub": "^2.11.2",
+    "@tailwindcss/vite": "^4.1.14",
+    "@vitejs/plugin-react": "^5.0.4",
+    "axios": "^1.16.0",
+    "clsx": "^2.1.1",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.38.0",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "recharts": "^3.8.1",
+    "tailwind-merge": "^3.5.0",
+    "vite": "^6.2.3"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.14.0",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
+    "autoprefixer": "^10.4.21",
+    "electron": "^33.4.11",
+    "tailwindcss": "^4.1.14",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.3"
+  },
+  "main": "electron.cjs"
+}
