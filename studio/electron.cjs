@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, Menu, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, Menu, ipcMain, nativeImage } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const http = require('http');
@@ -14,6 +14,8 @@ const backendLogPath = path.join(logDir, 'backend.log');
 const rendererLogPath = path.join(logDir, 'renderer.log');
 const distIndexPath = path.join(studioDir, 'dist', 'index.html');
 const preloadPath = path.join(studioDir, 'preload.cjs');
+const appIconPngPath = path.join(studioDir, 'public', 'haiku-icon.png');
+const appIconIcoPath = path.join(studioDir, 'public', 'haiku-icon.ico');
 const forceDev = process.env.HAIKU_STUDIO_DEV === '1' || process.env.HAIKU_STUDIO_DEV === 'true';
 const backendMode = forceDev || !fs.existsSync(distIndexPath) ? 'development' : 'production';
 
@@ -38,6 +40,35 @@ function appendLog(filePath, line) {
 function appendMain(line) { appendLog(mainLogPath, line); }
 function appendBackend(line) { appendLog(backendLogPath, line); }
 function appendRenderer(line) { appendLog(rendererLogPath, line); }
+
+function getAppIconPath() {
+  if (isWin && fs.existsSync(appIconIcoPath)) return appIconIcoPath;
+  if (fs.existsSync(appIconPngPath)) return appIconPngPath;
+  return undefined;
+}
+
+function getAppIconImage() {
+  const iconPath = getAppIconPath();
+  if (!iconPath) {
+    appendMain('[icon] no application icon file found in studio/public\n');
+    return undefined;
+  }
+  try {
+    const image = nativeImage.createFromPath(iconPath);
+    const size = image && !image.isEmpty() ? image.getSize() : null;
+    appendMain(`[icon] using ${iconPath}${size ? ` size=${size.width}x${size.height}` : ' empty'}\n`);
+    if (!image || image.isEmpty()) return iconPath;
+    return image;
+  } catch (err) {
+    appendMain(`[icon-warning] failed to load ${iconPath}: ${err && err.stack ? err.stack : String(err)}\n`);
+    return iconPath;
+  }
+}
+
+try {
+  app.setName('Haiku Studio');
+  if (isWin) app.setAppUserModelId('com.rootcomputer.HaikuStudio');
+} catch {}
 
 ensureLogDir();
 try {
@@ -241,6 +272,7 @@ async function createWindow() {
     minHeight: 760,
     backgroundColor: '#09090b',
     title: 'Haiku Studio',
+    icon: getAppIconImage(),
     autoHideMenuBar: true,
     menuBarVisible: false,
     show: false,
@@ -252,6 +284,13 @@ async function createWindow() {
       devTools: true,
     },
   });
+
+  try {
+    const iconImage = getAppIconImage();
+    if (iconImage && typeof mainWindow.setIcon === 'function') mainWindow.setIcon(iconImage);
+  } catch (err) {
+    appendMain(`[icon-warning] window setIcon failed: ${err && err.stack ? err.stack : String(err)}\n`);
+  }
 
   mainWindow.removeMenu();
 
@@ -299,6 +338,7 @@ function createDiagnosticWindow(title, detail) {
     height: 720,
     backgroundColor: '#09090b',
     title,
+    icon: getAppIconImage(),
     autoHideMenuBar: true,
     menuBarVisible: false,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: false },
@@ -335,6 +375,12 @@ function stopBackend() {
 }
 
 app.whenReady().then(() => {
+  try {
+    const iconImage = getAppIconImage();
+    if (iconImage && app.dock && typeof app.dock.setIcon === 'function') app.dock.setIcon(iconImage);
+  } catch (err) {
+    appendMain(`[icon-warning] ${err && err.stack ? err.stack : String(err)}\n`);
+  }
   registerIpcHandlers();
   return createWindow();
 }).catch((err) => {
