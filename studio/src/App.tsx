@@ -35,7 +35,7 @@ import {
   Info,
   AlertTriangle
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence } from './lib/motion-shim';
 import { 
   LineChart, 
   Line, 
