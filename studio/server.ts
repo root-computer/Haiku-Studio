@@ -13,6 +13,10 @@ const REPO_ROOT = path.resolve(STUDIO_DIR, "..");
 const SETTINGS_PATH = path.join(REPO_ROOT, ".haiku_studio.json");
 const CONFIG_PATH = path.join(REPO_ROOT, "config", "gpt_config.json");
 const PORT = Number(process.env.HAIKU_STUDIO_PORT || 3000);
+const DEFAULT_PROJECT_NAME = "haiku_studio";
+const PROJECTS_DIR = path.join(REPO_ROOT, "projects");
+const PREBUILT_TOKENIZER_PATH = path.join(STUDIO_DIR, "prebuilt", "default_tokenizer.json");
+const DATA_TOKENIZER_PATH = path.join(REPO_ROOT, "data", "tokenizer.json");
 
 type JsonObject = Record<string, any>;
 
@@ -28,7 +32,7 @@ const logLines: Array<[number, string]> = [];
 const MAX_LOG_LINES = 2000;
 
 function pushLog(line: string) {
-  const clean = line.replace(/\r/g, "").trimEnd();
+  const clean = line.replace(/\r/g, "\n").trimEnd();
   if (!clean) return;
   for (const part of clean.split("\n")) {
     const text = part.trimEnd();
@@ -97,12 +101,83 @@ function saveConfig(config: JsonObject) {
   writeJsonAtomic(CONFIG_PATH, config);
 }
 
+function safeProjectName(name: string | undefined): string {
+  const raw = String(name || DEFAULT_PROJECT_NAME).trim();
+  const safe = raw.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^\.+/, "").slice(0, 80);
+  return safe || DEFAULT_PROJECT_NAME;
+}
+
+function ensureProjectDir(projectName?: string): string {
+  const name = safeProjectName(projectName);
+  const dir = path.join(PROJECTS_DIR, name);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function listProjects(): string[] {
+  fs.mkdirSync(PROJECTS_DIR, { recursive: true });
+  const names = new Set<string>([DEFAULT_PROJECT_NAME]);
+  for (const entry of fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })) {
+    if (entry.isDirectory()) names.add(safeProjectName(entry.name));
+  }
+  return Array.from(names).sort();
+}
+
+function activeProjectName(): string {
+  const ui = readJson(SETTINGS_PATH, {});
+  return safeProjectName(ui.active_project || DEFAULT_PROJECT_NAME);
+}
+
+function projectTokenizerPath(projectName?: string): string {
+  return path.join(ensureProjectDir(projectName || activeProjectName()), "tokenizer.json");
+}
+
+function ensurePrebuiltTokenizerCopy() {
+  try {
+    fs.mkdirSync(path.dirname(PREBUILT_TOKENIZER_PATH), { recursive: true });
+    if (!fs.existsSync(PREBUILT_TOKENIZER_PATH) && fs.existsSync(DATA_TOKENIZER_PATH)) {
+      fs.copyFileSync(DATA_TOKENIZER_PATH, PREBUILT_TOKENIZER_PATH);
+      pushLog(`[tokenizer] Created prebuilt tokenizer copy: ${relToRepo(PREBUILT_TOKENIZER_PATH)}`);
+    }
+    const projectTok = projectTokenizerPath(DEFAULT_PROJECT_NAME);
+    if (!fs.existsSync(projectTok) && fs.existsSync(DATA_TOKENIZER_PATH)) {
+      fs.copyFileSync(DATA_TOKENIZER_PATH, projectTok);
+      pushLog(`[tokenizer] Created default project tokenizer copy: ${relToRepo(projectTok)}`);
+    }
+  } catch (err: any) {
+    pushLog(`[tokenizer] Failed to initialize prebuilt tokenizer copy: ${err.message}`);
+  }
+}
+
+function restorePrebuiltTokenizerToProject(projectName?: string): JsonObject {
+  ensurePrebuiltTokenizerCopy();
+  if (!fs.existsSync(PREBUILT_TOKENIZER_PATH)) throw new Error(`Prebuilt tokenizer is missing: ${PREBUILT_TOKENIZER_PATH}`);
+  fs.mkdirSync(path.dirname(DATA_TOKENIZER_PATH), { recursive: true });
+  fs.copyFileSync(PREBUILT_TOKENIZER_PATH, DATA_TOKENIZER_PATH);
+  const projectPath = projectTokenizerPath(projectName);
+  fs.copyFileSync(PREBUILT_TOKENIZER_PATH, projectPath);
+  pushLog(`[tokenizer] Restored prebuilt tokenizer to ${relToRepo(DATA_TOKENIZER_PATH)} and ${relToRepo(projectPath)}`);
+  return { data_tokenizer: relToRepo(DATA_TOKENIZER_PATH), project_tokenizer: relToRepo(projectPath) };
+}
+
 function loadUiSettings(): JsonObject {
-  const defaults = { theme: "dark", show_tooltips: true, project_dir: REPO_ROOT };
-  return { ...defaults, ...readJson(SETTINGS_PATH, {}) };
+  const defaults = {
+    theme: "dark",
+    show_tooltips: true,
+    active_project: DEFAULT_PROJECT_NAME,
+    project_dir: ensureProjectDir(DEFAULT_PROJECT_NAME),
+  };
+  const loaded = { ...defaults, ...readJson(SETTINGS_PATH, {}) };
+  loaded.active_project = safeProjectName(loaded.active_project);
+  loaded.project_dir = ensureProjectDir(loaded.active_project);
+  return loaded;
 }
 
 function saveUiSettings(settings: JsonObject) {
+  if (settings.active_project !== undefined) {
+    settings.active_project = safeProjectName(settings.active_project);
+    settings.project_dir = ensureProjectDir(settings.active_project);
+  }
   writeJsonAtomic(SETTINGS_PATH, settings);
 }
 
@@ -166,17 +241,23 @@ function studioFeedbackPath(): string {
 }
 
 function getSettingsPayload(): JsonObject {
+  ensurePrebuiltTokenizerCopy();
   const config = loadConfig();
   const ui = loadUiSettings();
   const model = config.model || {};
   const paths = config.paths || {};
+  const activeProject = safeProjectName(ui.active_project);
+  const activeProjectDir = ensureProjectDir(activeProject);
   return {
     ...ui,
-    project_dir: REPO_ROOT,
-    projects: [path.basename(REPO_ROOT)],
-    active_project: path.basename(REPO_ROOT),
+    project_dir: activeProjectDir,
+    projects: listProjects(),
+    active_project: activeProject,
     h2_repo_root: REPO_ROOT,
     h2_config_path: CONFIG_PATH,
+    tokenizer_path: relToRepo(DATA_TOKENIZER_PATH),
+    prebuilt_tokenizer_path: relToRepo(PREBUILT_TOKENIZER_PATH),
+    project_tokenizer_path: relToRepo(projectTokenizerPath(activeProject)),
     device: deepGet(config, "runtime.device", "auto"),
     model_params: estimateParams(model, tokenizerVocabSize(paths.tokenizer_path)),
     model_layers: model.n_layer ?? 0,
@@ -269,7 +350,7 @@ function updateConfigFromSettings(body: JsonObject) {
   const config = loadConfig();
   const ui = loadUiSettings();
 
-  const uiKeys = ["theme", "show_tooltips"];
+  const uiKeys = ["theme", "show_tooltips", "active_project"];
   for (const key of uiKeys) if (key in body) ui[key] = body[key];
 
   if (body.model_layers !== undefined) deepSet(config, "model.n_layer", Number(body.model_layers));
@@ -442,17 +523,48 @@ async function startServer() {
   app.post("/api/train/tokenizer", (req, res) => {
     try {
       const body = req.body || {};
-      const inputPath = body.path || deepGet(loadConfig(), "paths.corpus_dir", "corpus");
-      const outPath = body.out_path || deepGet(loadConfig(), "paths.tokenizer_path", "data/tokenizer.json");
+      const sourceKind = String(body.source_type || body.source_kind || "auto").trim();
+      const inputPath = String(body.input_path || body.path || "").trim();
+      if (!inputPath) {
+        return res.status(400).json({ error: "No tokenizer source selected. Choose a .txt file or corpus folder first." });
+      }
+      if (!["file", "corpus", "auto"].includes(sourceKind)) {
+        return res.status(400).json({ error: "Tokenizer source type must be file, corpus, or auto." });
+      }
+
+      const outPath = "data/tokenizer.json";
+      const activeProject = activeProjectName();
+      const projectCopy = relToRepo(projectTokenizerPath(activeProject));
+      const config = loadConfig();
+      deepSet(config, "paths.tokenizer_path", outPath);
+      saveConfig(config);
+
       const args = [
         path.join("tools", "train_tokenizer.py"),
+        "--source-kind", sourceKind,
         "--input", inputPath,
         "--output", outPath,
+        "--project-copy", projectCopy,
         "--vocab-size", String(body.vocab_size || 50000),
         "--min-freq", String(body.min_freq || 2),
+        "--max-input-mb", String(body.max_input_mb || 0),
+        "--chunk-mb", String(body.chunk_mb || 8),
       ];
+      if (body.no_ram_guard) args.push("--no-ram-guard");
+
+      pushLog(`[tokenizer] Requested ${sourceKind} tokenizer source: ${inputPath}`);
+      pushLog(`[tokenizer] Output will be saved to data/tokenizer.json and ${projectCopy}`);
       spawnJob("tokenizer", args);
-      res.json({ status: "Tokenizer training started", output: outPath });
+      res.json({ status: "Tokenizer training started", output: outPath, project_copy: projectCopy });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/tokenizer/restore-prebuilt", (_req, res) => {
+    try {
+      const paths = restorePrebuiltTokenizerToProject(activeProjectName());
+      res.json({ status: "Prebuilt tokenizer restored", ...paths, vocab_size: tokenizerVocabSize("data/tokenizer.json") });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
     }
