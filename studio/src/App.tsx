@@ -195,6 +195,10 @@ export default function App() {
   const [autoConfigPending, setAutoConfigPending] = useState(false);
   const [projects, setProjects] = useState<string[]>(['haiku_studio']);
   const [activeProject, setActiveProject] = useState('haiku_studio');
+  const [isNewProjectOpen, setIsNewProjectOpen] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('haiku_experiment');
+  const [newProjectSeedCurrent, setNewProjectSeedCurrent] = useState(true);
+  const [isCreatingProject, setIsCreatingProject] = useState(false);
 
   // Pretraining Form State
   const [corpusDir, setCorpusDir] = useState('corpus');
@@ -338,18 +342,33 @@ export default function App() {
     }
   }, [logs]);
 
-  const createProject = async () => {
+  const openNewProjectDialog = (suggestedName = 'haiku_experiment') => {
     if (isTraining) return;
-    const raw = window.prompt('New project name:', 'haiku_experiment');
-    const name = (raw || '').trim();
-    if (!name) return;
+    setNewProjectName(suggestedName);
+    setNewProjectSeedCurrent(true);
+    setIsNewProjectOpen(true);
+  };
+
+  const createProject = async () => {
+    if (isTraining || isCreatingProject) return;
+    const name = newProjectName.trim();
+    if (!name) {
+      alert('Project name is required.');
+      return;
+    }
     try {
-      const res = await axios.post('/api/projects/create', { name, seed_current: true });
+      setIsCreatingProject(true);
+      setIsTerminalOpen(true);
+      const res = await axios.post('/api/projects/create', { name, seed_current: newProjectSeedCurrent });
+      const createdName = res.data.project || name;
       setProjects(res.data.projects || []);
-      setLogs(prev => [...prev, `[project] ${res.data.status}: ${res.data.project}`].slice(-1000));
-      await loadProject(name);
+      setLogs(prev => [...prev, `[project] ${res.data.status}: ${createdName}`].slice(-1000));
+      setIsNewProjectOpen(false);
+      await loadProject(createdName);
     } catch (e: any) {
       alert(e?.response?.data?.error || 'Failed to create project.');
+    } finally {
+      setIsCreatingProject(false);
     }
   };
 
@@ -616,7 +635,7 @@ export default function App() {
           />
           <div className="flex flex-col">
             <span className={cn("font-bold text-base tracking-tight leading-none", theme === 'dark' ? "text-white" : "text-zinc-900")}>Haiku Studio</span>
-            <span className="text-[10px] font-semibold text-zinc-400 capitalize tracking-wider mt-1 opacity-70">BY ROOTCOMPUTER</span>
+            <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider mt-1 opacity-70">BY ROOTCOMPUTER</span>
           </div>
         </div>
 
@@ -686,7 +705,7 @@ export default function App() {
                  {projects.map(project => <option key={project} value={project}>{project}</option>)}
                </select>
                <button
-                 onClick={createProject}
+                 onClick={() => openNewProjectDialog()}
                  disabled={isTraining}
                  className={cn(
                    "px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border disabled:opacity-40",
@@ -794,7 +813,7 @@ export default function App() {
                   <div className="flex flex-wrap gap-3 pt-4">
                     <button onClick={syncProjectToData} disabled={isTraining} className={cn("px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider border disabled:opacity-40", theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-200 hover:bg-zinc-800" : "bg-white border-zinc-200 text-zinc-900 hover:bg-zinc-50")}>Load Project Into Data</button>
                     <button onClick={saveRuntimeToProject} disabled={isTraining} className={cn("px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider border disabled:opacity-40", theme === 'dark' ? "bg-zinc-900 border-zinc-800 text-zinc-200 hover:bg-zinc-800" : "bg-white border-zinc-200 text-zinc-900 hover:bg-zinc-50")}>Save Runtime To Project</button>
-                    <button onClick={createProject} disabled={isTraining} className={cn("px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider border disabled:opacity-40", theme === 'dark' ? "bg-white border-white text-black hover:bg-zinc-200" : "bg-zinc-900 border-zinc-900 text-white hover:bg-black")}>Create Project</button>
+                    <button onClick={() => openNewProjectDialog()} disabled={isTraining} className={cn("px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider border disabled:opacity-40", theme === 'dark' ? "bg-white border-white text-black hover:bg-zinc-200" : "bg-zinc-900 border-zinc-900 text-white hover:bg-black")}>Create Project</button>
                   </div>
                 </Card>
 
@@ -2026,6 +2045,112 @@ export default function App() {
 
       </div>
 
+      {/* New Project Modal */}
+      <AnimatePresence>
+        {isNewProjectOpen && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-6">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => !isCreatingProject && setIsNewProjectOpen(false)}
+              className="absolute inset-0 bg-zinc-900/70 backdrop-blur-md"
+            />
+            <motion.div
+              initial={{ scale: 0.98, opacity: 0, y: 10 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.98, opacity: 0, y: 10 }}
+              className={cn(
+                "relative w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden border",
+                theme === 'dark' ? "bg-zinc-950 border-zinc-800" : "bg-white border-zinc-200"
+              )}
+            >
+              <div className="px-7 py-6 border-b border-[var(--border)] flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div className={cn("w-11 h-11 rounded-xl flex items-center justify-center", theme === 'dark' ? "bg-white text-black" : "bg-zinc-900 text-white")}>
+                    <Plus className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold text-[var(--foreground)] tracking-tight">Create New Project</h3>
+                    <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mt-1">Creates project folders and stages runtime files</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsNewProjectOpen(false)}
+                  disabled={isCreatingProject}
+                  className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-all text-zinc-400 disabled:opacity-40"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-7 space-y-6">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest ml-1">Project name</label>
+                  <input
+                    autoFocus
+                    value={newProjectName}
+                    onChange={(e) => setNewProjectName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') createProject();
+                      if (e.key === 'Escape') setIsNewProjectOpen(false);
+                    }}
+                    placeholder="haiku_experiment"
+                    className={cn(
+                      "w-full rounded-xl px-4 py-3 text-sm font-mono font-bold border outline-none transition-all",
+                      theme === 'dark' ? "bg-zinc-900 border-zinc-800 focus:border-white text-white" : "bg-zinc-50 border-zinc-200 focus:border-zinc-900 text-zinc-900"
+                    )}
+                  />
+                  <p className="text-[10px] text-zinc-500 leading-relaxed">
+                    Names are converted to safe folder names. The project will be created under <span className="font-mono">projects/</span>.
+                  </p>
+                </div>
+
+                <label className={cn("flex items-start gap-3 p-4 rounded-xl border cursor-pointer", theme === 'dark' ? "bg-zinc-900/50 border-zinc-800" : "bg-zinc-50 border-zinc-100")}>
+                  <input
+                    type="checkbox"
+                    checked={newProjectSeedCurrent}
+                    onChange={(e) => setNewProjectSeedCurrent(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <div>
+                    <p className="text-xs font-bold text-[var(--foreground)]">Seed from current runtime</p>
+                    <p className="text-[10px] text-zinc-500 leading-relaxed mt-1">
+                      Copies the current tokenizer/config into the new project so it can be loaded immediately.
+                    </p>
+                  </div>
+                </label>
+
+                <div className={cn("rounded-xl border p-4 text-[10px] leading-relaxed", theme === 'dark' ? "bg-zinc-900/40 border-zinc-800 text-zinc-400" : "bg-zinc-50 border-zinc-100 text-zinc-500")}>
+                  The app will create <span className="font-mono">checkpoints</span>, <span className="font-mono">logs</span>, <span className="font-mono">cache</span>, and dataset folders for corpus, SFT, and DPO.
+                </div>
+              </div>
+
+              <div className="px-7 py-5 border-t border-[var(--border)] flex justify-end gap-3">
+                <button
+                  onClick={() => setIsNewProjectOpen(false)}
+                  disabled={isCreatingProject}
+                  className="px-5 py-2.5 rounded-xl text-[10px] font-bold text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-all uppercase tracking-wider disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={createProject}
+                  disabled={isCreatingProject || isTraining || !newProjectName.trim()}
+                  className={cn(
+                    "px-6 py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all disabled:opacity-40 flex items-center gap-2",
+                    theme === 'dark' ? "bg-white text-black hover:bg-zinc-100" : "bg-zinc-900 text-white hover:bg-zinc-800"
+                  )}
+                >
+                  {isCreatingProject ? <RotateCcw className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                  Create Project
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* Settings Modal */}
       <AnimatePresence>
         {isSettingsOpen && (
@@ -2200,35 +2325,27 @@ export default function App() {
                                         </div>
                                      </div>
                                      {activeProject !== p && (
-                                       <button onClick={() => setActiveProject(p)} className="px-3 py-1.5 bg-zinc-900 dark:bg-white text-white dark:text-black text-[9px] font-bold uppercase tracking-wider rounded-lg opacity-0 group-hover:opacity-100 transition-all">
+                                       <button onClick={() => loadProject(p)} className="px-3 py-1.5 bg-zinc-900 dark:bg-white text-white dark:text-black text-[9px] font-bold uppercase tracking-wider rounded-lg opacity-0 group-hover:opacity-100 transition-all">
                                           MOUNT
                                        </button>
                                      )}
                                   </div>
                                 ))}
                              </div>
-                             <div className="relative group mt-4">
-                                <Plus className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
-                                <input 
-                                  type="text" 
-                                  placeholder="INITIALIZE NEW PROJECT..." 
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                      const val = (e.target as any).value;
-                                      if (val) {
-                                        setProjects([...projects, val]);
-                                        (e.target as any).value = '';
-                                      }
-                                    }
-                                  }}
-                                  className={cn(
-                                    "w-full pl-12 pr-4 py-4 rounded-xl text-[10px] font-bold uppercase tracking-widest outline-none transition-all",
-                                    theme === 'dark' 
-                                      ? "bg-zinc-900/40 border-zinc-800 focus:border-white text-white" 
-                                      : "bg-white border-[#F1F1F1] focus:border-zinc-900 text-zinc-400 placeholder:text-zinc-300"
-                                  )}
-                                />
-                             </div>
+                             <button
+                               type="button"
+                               onClick={() => openNewProjectDialog()}
+                               disabled={isTraining}
+                               className={cn(
+                                 "w-full mt-4 px-4 py-4 rounded-xl text-[10px] font-bold uppercase tracking-widest outline-none transition-all flex items-center justify-center gap-3 border disabled:opacity-40",
+                                 theme === 'dark' 
+                                   ? "bg-zinc-900/40 border-zinc-800 hover:border-white text-white" 
+                                   : "bg-white border-[#F1F1F1] hover:border-zinc-900 text-zinc-500"
+                               )}
+                             >
+                               <Plus className="w-4 h-4" />
+                               Initialize New Project
+                             </button>
                           </div>
                        </section>
 
