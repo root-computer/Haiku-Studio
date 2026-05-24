@@ -32,7 +32,8 @@ import {
   Moon,
   Lock,
   Unlock,
-  Info
+  Info,
+  AlertTriangle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -116,6 +117,62 @@ interface AppSettings {
 // --- Context ---
 const ThemeContext = React.createContext<{ theme: 'light' | 'dark', showTooltips: boolean }>({ theme: 'light', showTooltips: true });
 const useTheme = () => React.useContext(ThemeContext);
+
+type KernelSeverity = 'normal' | 'warning' | 'error';
+
+type KernelLogEntry = {
+  id: number;
+  line: string;
+  time: string;
+  severity: KernelSeverity;
+};
+
+const severityRank: Record<KernelSeverity, number> = { normal: 0, warning: 1, error: 2 };
+
+const maxSeverity = (a: KernelSeverity, b: KernelSeverity): KernelSeverity => severityRank[b] > severityRank[a] ? b : a;
+
+const classifyKernelLine = (line: string): KernelSeverity => {
+  const lower = line.toLowerCase();
+
+  const nonFatalPattern = /\b(warn|warning|deprecated|fallback|retry|skipping|skip|nonfatal|non-fatal|recoverable|restored|no checkpoint|checkpoint not found|missing optional|not configured|slow|ram guard|low ram)\b/;
+  const explicitlyNonFatal = /failed to persist theme|local ui theme changed|using fallback|falling back|optional dependency|missing optional/.test(lower);
+
+  if (!explicitlyNonFatal && /\b(fatal|critical|traceback|exception|uncaught|runtimeerror|syntaxerror|typeerror|valueerror|cuda out of memory|out of memory|oom|crash|crashed|npm error|errno|econnrefused|etimedout|spawn einval|spawn eperm|permission denied|access denied|cannot find module|module not found|file not found|no such file|failed to start|failed to train|failure|backend exited code=[1-9]|exited code=[1-9]|process exited with code [1-9])\b/.test(lower)) {
+    return 'error';
+  }
+
+  if (!explicitlyNonFatal && /\b(error|failed)\b/.test(lower)) {
+    return 'error';
+  }
+
+  if (explicitlyNonFatal || nonFatalPattern.test(lower)) {
+    return 'warning';
+  }
+
+  return 'normal';
+};
+
+const kernelSeverityClass = (severity: KernelSeverity, theme: 'light' | 'dark') => {
+  if (severity === 'error') {
+    return theme === 'dark'
+      ? 'bg-rose-950/55 border-l-2 border-rose-400 text-rose-100 hover:bg-rose-950/70'
+      : 'bg-rose-50 border-l-2 border-rose-500 text-rose-950 hover:bg-rose-100/70';
+  }
+  if (severity === 'warning') {
+    return theme === 'dark'
+      ? 'bg-amber-950/45 border-l-2 border-amber-400 text-amber-100 hover:bg-amber-950/60'
+      : 'bg-amber-50 border-l-2 border-amber-500 text-amber-950 hover:bg-amber-100/70';
+  }
+  return theme === 'dark'
+    ? 'border-zinc-800 hover:bg-zinc-800/30 text-zinc-400'
+    : 'border-zinc-50 border-b hover:bg-zinc-50/50 text-zinc-500';
+};
+
+const kernelSeverityLabelClass = (severity: KernelSeverity, theme: 'light' | 'dark') => {
+  if (severity === 'error') return theme === 'dark' ? 'bg-rose-500 text-white' : 'bg-rose-600 text-white';
+  if (severity === 'warning') return theme === 'dark' ? 'bg-amber-400 text-black' : 'bg-amber-500 text-black';
+  return theme === 'dark' ? 'bg-zinc-800 text-zinc-400' : 'bg-zinc-100 text-zinc-500';
+};
 
 // --- Components ---
 
@@ -278,11 +335,13 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
-  const [logs, setLogs] = useState<string[]>([]);
+  const [logs, setLogs] = useState<KernelLogEntry[]>([]);
   const [logCursor, setLogCursor] = useState(0);
+  const kernelLogIdRef = React.useRef(0);
   const [metrics, setMetrics] = useState<Metrics>({ steps: [], train_loss: [], val_loss: [], meta: {} });
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
+  const [kernelAttention, setKernelAttention] = useState<KernelSeverity>('normal');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [hardwareInfo, setHardwareInfo] = useState<any>(null);
   const [autoConfigPending, setAutoConfigPending] = useState(false);
@@ -339,13 +398,39 @@ export default function App() {
 
   const [isArchitectureLocked, setIsArchitectureLocked] = useState(true);
 
+  const appendKernelLogs = React.useCallback((incoming: string | string[]) => {
+    const lines = (Array.isArray(incoming) ? incoming : [incoming])
+      .map(line => String(line ?? ''))
+      .filter(line => line.length > 0);
+    if (lines.length === 0) return;
+
+    const now = new Date();
+    const stamp = now.toLocaleTimeString();
+    const entries: KernelLogEntry[] = lines.map(line => ({
+      id: ++kernelLogIdRef.current,
+      line,
+      time: stamp,
+      severity: classifyKernelLine(line),
+    }));
+    const incomingSeverity = entries.reduce<KernelSeverity>((level, entry) => maxSeverity(level, entry.severity), 'normal');
+
+    if (incomingSeverity === 'error') {
+      setKernelAttention('error');
+      setIsTerminalOpen(true);
+    } else if (incomingSeverity === 'warning') {
+      setKernelAttention(prev => prev === 'error' ? prev : 'warning');
+    }
+
+    setLogs(prev => [...prev, ...entries].slice(-1000));
+  }, []);
+
   // Poll logs and metrics
   useEffect(() => {
     const fetchLogs = async () => {
       try {
         const res = await axios.get(`/api/logs?since=${logCursor}`);
         if (res.data.lines?.length > 0) {
-          setLogs(prev => [...prev, ...res.data.lines.map((l: any) => l[1])].slice(-1000));
+          appendKernelLogs(res.data.lines.map((l: any) => l[1]));
           setLogCursor(res.data.cursor);
         }
       } catch (e) {}
@@ -369,7 +454,7 @@ export default function App() {
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [logCursor]);
+  }, [logCursor, appendKernelLogs]);
 
   const fetchSettings = async () => {
     try {
@@ -433,7 +518,7 @@ export default function App() {
     try {
       await axios.post('/api/settings', payload);
     } catch (e) {
-      setLogs(prev => [...prev, '[theme] Failed to persist theme selection; local UI theme changed for this session.'].slice(-1000));
+      appendKernelLogs('[theme] Warning: failed to persist theme selection; local UI theme changed for this session.');
     }
   };
 
@@ -472,7 +557,7 @@ export default function App() {
       const res = await axios.post('/api/projects/create', { name, seed_current: newProjectSeedCurrent });
       const createdName = res.data.project || name;
       setProjects(res.data.projects || []);
-      setLogs(prev => [...prev, `[project] ${res.data.status}: ${createdName}`].slice(-1000));
+      appendKernelLogs(`[project] ${res.data.status}: ${createdName}`);
       setIsNewProjectOpen(false);
       await loadProject(createdName);
     } catch (e: any) {
@@ -494,7 +579,7 @@ export default function App() {
       if (next.corpus_dir) setCorpusDir(next.corpus_dir);
       if (next.sft_dataset) setSftDataPath(next.sft_dataset);
       if (next.dpo_dataset) setDpoDataPath(next.dpo_dataset);
-      setLogs(prev => [...prev, `[project] Loaded ${name}. Project tokenizer/config are now staged into data/.`].slice(-1000));
+      appendKernelLogs(`[project] Loaded ${name}. Project tokenizer/config are now staged into data/.`);
       fetchSettings();
     } catch (e: any) {
       alert(e?.response?.data?.error || 'Failed to load project.');
@@ -505,7 +590,7 @@ export default function App() {
     try {
       setIsTerminalOpen(true);
       const res = await axios.post('/api/projects/sync-to-data');
-      setLogs(prev => [...prev, `[project] ${res.data.status}`].slice(-1000));
+      appendKernelLogs(`[project] ${res.data.status}`);
       fetchSettings();
     } catch (e: any) {
       alert(e?.response?.data?.error || 'Failed to sync project into data/.');
@@ -516,7 +601,7 @@ export default function App() {
     try {
       setIsTerminalOpen(true);
       const res = await axios.post('/api/projects/save-runtime');
-      setLogs(prev => [...prev, `[project] ${res.data.status}`].slice(-1000));
+      appendKernelLogs(`[project] ${res.data.status}`);
       fetchSettings();
     } catch (e: any) {
       alert(e?.response?.data?.error || 'Failed to save runtime files to project.');
@@ -584,7 +669,7 @@ export default function App() {
         min_freq: tokMinFreq,
         max_input_mb: tokMaxInputMb
       });
-      setLogs(prev => [...prev, `[tokenizer] ${res.data.status}. Saving to data/tokenizer.json and project tokenizer copy.`].slice(-1000));
+      appendKernelLogs(`[tokenizer] ${res.data.status}. Saving to data/tokenizer.json and project tokenizer copy.`);
     } catch (e: any) {
       const message = e?.response?.data?.error || "Failed to start tokenizer training.";
       alert(message);
@@ -596,7 +681,7 @@ export default function App() {
     setIsTerminalOpen(true);
     try {
       const res = await axios.post('/api/tokenizer/restore-prebuilt');
-      setLogs(prev => [...prev, `[tokenizer] ${res.data.status}: data/tokenizer.json restored from bundled prebuilt tokenizer.`].slice(-1000));
+      appendKernelLogs(`[tokenizer] ${res.data.status}: data/tokenizer.json restored from bundled prebuilt tokenizer.`);
       fetchSettings();
     } catch (e: any) {
       alert(e?.response?.data?.error || "Failed to restore prebuilt tokenizer.");
@@ -856,7 +941,7 @@ export default function App() {
                        <button 
                         onClick={() => {
                           setDeployMenuOpen(false);
-                          setLogs(prev => [...prev, `[SYSTEM] h2 trainers save checkpoints and metrics into the active project folder.`, `[SYSTEM] Use Hugging Face Push to export saved artifacts.`]);
+                          appendKernelLogs([`[SYSTEM] h2 trainers save checkpoints and metrics into the active project folder.`, `[SYSTEM] Use Hugging Face Push to export saved artifacts.`]);
                         }}
                         className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left text-[10px] font-bold uppercase tracking-wider text-zinc-500 hover:text-black dark:hover:text-white hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-all group"
                        >
@@ -1525,8 +1610,8 @@ export default function App() {
                     icon={Brain}
                  />
 
-                 <div className="grid grid-cols-3 gap-8">
-                    <Card title="SFT Configuration" subtitle="Refine dialogue parameters" className="col-span-2">
+                 <div className="grid grid-cols-1 gap-8">
+                    <Card title="SFT Configuration" subtitle="Refine dialogue parameters">
                        <div className="space-y-6">
                           <div className="space-y-2 group relative">
                              <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">SFT Training Data</label>
@@ -1575,24 +1660,6 @@ export default function App() {
                           </RunButton>
                        </div>
                     </Card>
-                    <div className="space-y-6">
-                       <Card title="SFT Insights">
-                          <div className="space-y-4">
-                             <div className="flex justify-between items-center">
-                                <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Samples</span>
-                                <span className="text-xs font-bold font-mono">1,240</span>
-                             </div>
-                             <div className="flex justify-between items-center">
-                                <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Avg Seq Len</span>
-                                <span className="text-xs font-bold font-mono">512</span>
-                             </div>
-                             <div className="w-full bg-zinc-100 rounded-full h-1.5 overflow-hidden">
-                                <div className="bg-emerald-500 h-full w-[65%]" />
-                             </div>
-                             <p className="text-[10px] text-zinc-500 font-medium">Dataset split: 80/20 train/val</p>
-                          </div>
-                       </Card>
-                    </div>
                  </div>
               </motion.div>
             )}
@@ -2060,22 +2127,54 @@ export default function App() {
              onClick={() => setIsTerminalOpen(!isTerminalOpen)}
              className={cn("h-12 px-6 flex items-center justify-between cursor-pointer border-b", theme === 'dark' ? "border-zinc-800" : "border-zinc-50")}
            >
-              <div className="flex items-center gap-3">
-                <Terminal className="w-4 h-4 text-zinc-400" />
+              <div className="flex items-center gap-3 min-w-0">
+                <Terminal className={cn(
+                  "w-4 h-4 shrink-0",
+                  kernelAttention === 'error' ? "text-rose-500" : kernelAttention === 'warning' ? "text-amber-500" : "text-zinc-400"
+                )} />
                 <span className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-500">System Kernel Output</span>
+                {!isTerminalOpen && kernelAttention !== 'normal' && (
+                  <span className={cn(
+                    "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-widest border",
+                    kernelAttention === 'error'
+                      ? (theme === 'dark' ? "bg-rose-950/70 border-rose-500/50 text-rose-100" : "bg-rose-50 border-rose-200 text-rose-800")
+                      : (theme === 'dark' ? "bg-amber-950/70 border-amber-500/50 text-amber-100" : "bg-amber-50 border-amber-200 text-amber-800")
+                  )}>
+                    <AlertTriangle className="w-3 h-3" />
+                    {kernelAttention === 'error' ? 'Action Required' : 'Warning'}
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-4">
                  {isTerminalOpen && (
-                   <button onClick={(e) => { e.stopPropagation(); setLogs([]); }} className="text-[10px] font-bold text-zinc-400 hover:text-rose-500 transition-colors uppercase tracking-widest flex items-center gap-1.5 px-3 py-1 hover:bg-rose-50 rounded-lg">
+                   <button onClick={(e) => { e.stopPropagation(); setLogs([]); setKernelAttention('normal'); }} className="text-[10px] font-bold text-zinc-400 hover:text-rose-500 transition-colors uppercase tracking-widest flex items-center gap-1.5 px-3 py-1 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg">
                       <Trash2 className="w-3 h-3" /> Clear Buffer
                    </button>
                  )}
                  <div className={cn(
-                    "flex items-center gap-2 px-3 py-1.5 rounded-full border",
-                    theme === 'dark' ? "bg-zinc-800 border-zinc-700" : "bg-zinc-50 border-zinc-100"
+                    "flex items-center gap-2 px-3 py-1.5 rounded-full border transition-colors",
+                    kernelAttention === 'error'
+                      ? (theme === 'dark' ? "bg-rose-950/60 border-rose-500/40" : "bg-rose-50 border-rose-200")
+                      : kernelAttention === 'warning'
+                        ? (theme === 'dark' ? "bg-amber-950/60 border-amber-500/40" : "bg-amber-50 border-amber-200")
+                        : (theme === 'dark' ? "bg-zinc-800 border-zinc-700" : "bg-zinc-50 border-zinc-100")
                  )}>
-                    <span className="w-1.5 h-1.5 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]" />
-                    <span className={cn("text-[10px] font-black uppercase tracking-widest", theme === 'dark' ? "text-zinc-400" : "text-zinc-600")}>Kernel Ready</span>
+                    <span className={cn(
+                      "w-1.5 h-1.5 rounded-full",
+                      kernelAttention === 'error' ? "bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.7)]" :
+                      kernelAttention === 'warning' ? "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.7)]" :
+                      "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"
+                    )} />
+                    <span className={cn(
+                      "text-[10px] font-black uppercase tracking-widest",
+                      kernelAttention === 'error'
+                        ? (theme === 'dark' ? "text-rose-100" : "text-rose-800")
+                        : kernelAttention === 'warning'
+                          ? (theme === 'dark' ? "text-amber-100" : "text-amber-800")
+                          : (theme === 'dark' ? "text-zinc-400" : "text-zinc-600")
+                    )}>
+                      {kernelAttention === 'error' ? 'Kernel Alert' : kernelAttention === 'warning' ? 'Kernel Warning' : 'Kernel Ready'}
+                    </span>
                  </div>
               </div>
            </div>
@@ -2088,23 +2187,30 @@ export default function App() {
                )}
              >
                 {logs.length === 0 && <span className="text-zinc-300 italic font-medium">Listening for engine cycles... system operational.</span>}
-                {logs.map((log, i) => (
-                  <div key={i} className={cn(
-                    "flex gap-4 py-1 last:border-0 hover:bg-zinc-50/50 dark:hover:bg-zinc-800/30 transition-colors",
-                    theme === 'dark' ? "border-zinc-800" : "border-zinc-50 border-b"
-                  )}>
-                    <span className="text-zinc-400 dark:text-zinc-600 shrink-0 font-bold tabular-nums">{(i+1).toString().padStart(4, '0')}</span>
-                    <span className="text-zinc-400 shrink-0 font-bold text-[9px] uppercase tracking-tighter mt-0.5 opacity-60">{new Date().toLocaleTimeString()}</span>
-                    <span className={cn(
-                      "break-all pr-4 font-medium",
-                      log.includes('ERROR') ? "text-rose-500 font-bold" : 
-                      log.includes('loss') ? (theme === 'dark' ? "text-zinc-200 font-bold" : "text-zinc-900 font-bold") : 
-                      (theme === 'dark' ? "text-zinc-400" : "text-zinc-500")
+                {logs.map((entry, i) => {
+                  const severity = entry.severity;
+                  return (
+                    <div key={entry.id} className={cn(
+                      "flex gap-4 py-1.5 px-2 rounded-md transition-colors",
+                      kernelSeverityClass(severity, theme)
                     )}>
-                      {log}
-                    </span>
-                  </div>
-                ))}
+                      <span className="text-zinc-400 dark:text-zinc-600 shrink-0 font-bold tabular-nums">{(i+1).toString().padStart(4, '0')}</span>
+                      <span className="text-zinc-400 shrink-0 font-bold text-[9px] uppercase tracking-tighter mt-0.5 opacity-70">{entry.time}</span>
+                      <span className={cn("shrink-0 px-2 py-0.5 rounded-md text-[8px] font-black uppercase tracking-widest h-fit mt-0.5", kernelSeverityLabelClass(severity, theme))}>
+                        {severity === 'error' ? 'ERR' : severity === 'warning' ? 'WARN' : 'LOG'}
+                      </span>
+                      <span className={cn(
+                        "break-all pr-4 font-medium",
+                        severity === 'error' ? (theme === 'dark' ? "text-rose-100 font-bold" : "text-rose-950 font-bold") :
+                        severity === 'warning' ? (theme === 'dark' ? "text-amber-100 font-semibold" : "text-amber-950 font-semibold") :
+                        entry.line.includes('loss') ? (theme === 'dark' ? "text-zinc-200 font-bold" : "text-zinc-900 font-bold") :
+                        (theme === 'dark' ? "text-zinc-400" : "text-zinc-500")
+                      )}>
+                        {entry.line}
+                      </span>
+                    </div>
+                  );
+                })}
              </div>
            )}
         </div>
