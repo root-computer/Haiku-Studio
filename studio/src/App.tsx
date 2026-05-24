@@ -492,7 +492,7 @@ export default function App() {
           )}>H</div>
           <div className="flex flex-col">
             <span className={cn("font-bold text-base tracking-tight leading-none", theme === 'dark' ? "text-white" : "text-zinc-900")}>Haiku Studio</span>
-            <span className="text-[10px] font-semibold text-zinc-400 capitalize tracking-wider mt-1 opacity-70">h2 engine · optional UI</span>
+            <span className="text-[10px] font-semibold text-zinc-400 capitalize tracking-wider mt-1 opacity-70">BY ROOTCOMPUTER</span>
           </div>
         </div>
 
