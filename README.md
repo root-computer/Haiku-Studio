@@ -98,6 +98,11 @@ pip install -r requirements.txt
 
 Install the correct PyTorch build for your CUDA version from the official PyTorch install selector when GPU training is required.
 
+On linux systems you can use the nix package manager to install all dependencies.
+```bash
+nix-shell
+```
+
 ### Desktop UI
 
 Recommended:
@@ -111,8 +116,14 @@ The launcher installs UI dependencies inside `studio/` when required.
 
 From the repository root:
 
+Windows:
 ```bat
 launch_haiku_studio.bat
+```
+
+Linux:
+```bash
+bash linux-run.sh
 ```
 
 The app opens as an Electron desktop window. The local API runs on `127.0.0.1` and starts the Python training processes behind the UI.
