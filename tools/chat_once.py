@@ -133,7 +133,7 @@ def main() -> None:
 
     if checkpoint_path is None:
         print(json.dumps({
-            "reply": "No h2 checkpoint found yet. Train or copy a checkpoint to data/model.pt, data/model.sft.pt, or data/model.dpo.pt.",
+            "reply": "No h2 checkpoint found in the active project yet. Train a model or place a checkpoint in the active project's checkpoints folder.",
             "prompt": prompt,
         }))
         return
